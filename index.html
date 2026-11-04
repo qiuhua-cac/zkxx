@@ -1041,17 +1041,27 @@ function renderPracticeList(type, keyword) {
     const isSelected = (idx === practiceSelectedIdx);
     div.className = 'bank-item' + (isSelected ? ' selected' : '');
     const isPracticeHidden = editDataForList[item.q] && editDataForList[item.q].practiceHidden;
-    // 获取选项与正确答案
+    
     let displayOpts = [];
-    let displayCorrect = '';
+    let correctStr = '';
+    let answerDisplayHTML = '';
+
     if (type === 'fill') {
-        displayCorrect = item.a;
+        answerDisplayHTML = `<span style="color:#b91c1c;font-weight:600;">${escapeHTML(item.a)}</span>`;
     } else {
         const ed = editDataForList[item.q] || {};
         displayOpts = ed.options || cfg.singleOptions[item.q] || cfg.multiOptions[item.q] || ['A. 选项A', 'B. 选项B', 'C. 选项C', 'D. 选项D'];
-        displayCorrect = ed.correct || cfg.singleCorrect[item.q] || cfg.multiCorrect[item.q] || 'A';
+        correctStr = ed.correct || cfg.singleCorrect[item.q] || cfg.multiCorrect[item.q] || 'A';
+        
+        // 提取正确选项的中文文本
+        const correctLetter = String(correctStr).replace(/\s+/g, '').toUpperCase();
+        const matchOpt = displayOpts.find(o => o.trim().startsWith(correctLetter + '.') || o.trim().startsWith(correctLetter + '．'));
+        let correctText = matchOpt ? matchOpt.replace(/^[A-Z][\.．]\s*/, '') : '';
+
+        answerDisplayHTML = `<span style="color:#b91c1c;font-weight:600;">${escapeHTML(correctStr)}</span>${correctText ? ' ' + escapeHTML(correctText) : ''}`;
     }
-    const optsHtml = (type !== 'fill' && displayOpts.length > 0) ? `<div style="font-size:12px;color:#475569;margin-top:6px;line-height:1.5;">选项：${displayOpts.map(o=>escapeHTML(o)).join(' | ')}</div>` : '';
+    
+    const optsHtml = (type !== 'fill' && displayOpts.length > 0) ? `<div style="font-size:12px;color:#64748b;margin-top:6px;line-height:1.6;">选项：${displayOpts.map(o=>escapeHTML(o)).join(' | ')}</div>` : '';
     
     div.innerHTML = `
         <div class="bi-idx">#${idx + 1}</div>
@@ -1059,7 +1069,7 @@ function renderPracticeList(type, keyword) {
         ${item.isChoice ? '<div class="bi-choice-tag">🔘 选择题</div>' : ''}
         <div class="bi-content">
             <div class="bi-q">${escapeHTML(item.q)}</div>
-            <div class="bi-a">答案：${escapeHTML((displayCorrect || '').substring(0, 60))}${(displayCorrect || '').length > 60 ? '…' : ''}</div>
+            <div class="bi-a">答案：${answerDisplayHTML}</div>
             ${optsHtml}
         </div>
         <button class="bi-edit-btn" data-idx="${idx}">✏️ 去编辑</button>
@@ -1187,20 +1197,23 @@ function answerSimilarity(studentAns, correctAns) {
 }
 function getQuestionScore(idx) {
     // 兼容测试模式和普通模式
-    const sourceQuestions = (typeof testQuestions !== 'undefined' && testQuestions.length > 0) ? testQuestions : practiceQuestions;
-    const sourceAnswers = (typeof testAnswers !== 'undefined' && testAnswers.length > 0) ? testAnswers : practiceAnswers;
+    const isTest = (typeof testQuestions !== 'undefined' && testQuestions.length > 0 && typeof testAnswers !== 'undefined' && testAnswers.length > 0 && testQuestions[idx] !== undefined);
+    const sourceQuestions = isTest ? testQuestions : practiceQuestions;
+    const sourceAnswers = isTest ? testAnswers : practiceAnswers;
     
     const rawQ = sourceQuestions[idx]; 
     const answer = sourceAnswers[idx];
     if (!rawQ) return 0;
     
-    const isChoice = rawQ.isChoice === true;
+    // 统一判断是否是选择题（不管是元数据还是练习编辑后的数据）
     const cfg = loadPracticeCfg(); const editData = loadPracticeEdit(); const ed = editData[rawQ.q] || {};
+    const isChoice = ed.isChoice !== undefined ? ed.isChoice : (rawQ.isChoice === true);
+    
     if (isChoice) {
         let correctAnswer = ed.correct || cfg.singleCorrect[rawQ.q] || cfg.multiCorrect[rawQ.q] || 'A';
-        // 统一去除空格并转大写对比
-        const studentSafe = String(answer || '').replace(/\s+/g, '').toUpperCase();
-        const correctSafe = String(correctAnswer).replace(/\s+/g, '').toUpperCase();
+        // 统一去除空格、标点并转大写对比
+        const studentSafe = String(answer || '').replace(/[\s\.．]/g, '').toUpperCase();
+        const correctSafe = String(correctAnswer).replace(/[\s\.．]/g, '').toUpperCase();
         if (correctSafe.length > 1) {
             const studentSort = studentSafe.split('').sort().join('');
             const correctSort = correctSafe.split('').sort().join('');
@@ -1640,21 +1653,30 @@ function renderTestQuestion() {
     const rawQ = testQuestions[testCurrentIndex]; if (!rawQ) return;
     const body = document.getElementById('practiceBody'); if (!body) return;
     const idx = testCurrentIndex; const submitted = testSubmitted[idx]; const answerData = testAnswers[idx];
-    const q = getPracticeQuestion(rawQ); const isChoice = isQuestionChoice(rawQ);
-    const cfg = loadPracticeCfg(); const editData = loadPracticeEdit(); const ed = editData[rawQ.q];
+    const q = getPracticeQuestion(rawQ);
+    
+    const cfg = loadPracticeCfg(); const editData = loadPracticeEdit(); const ed = editData[rawQ.q] || {};
+    // 统一判断
+    const isChoice = ed.isChoice !== undefined ? ed.isChoice : (rawQ.isChoice === true);
+    
     let answerHTML = ''; let typeLabel = '';
     if (isChoice) {
         let opts = [], correctAnswer = '';
         if (ed && ed.options) { opts = ed.options; correctAnswer = ed.correct || ''; }
         else { opts = cfg.singleOptions[rawQ.q] || cfg.multiOptions[rawQ.q] || ['A. 选项A', 'B. 选项B', 'C. 选项C', 'D. 选项D']; correctAnswer = cfg.singleCorrect[rawQ.q] || cfg.multiCorrect[rawQ.q] || 'A'; }
-        const isMulti = (correctAnswer || '').length > 1; typeLabel = isMulti ? '☑️ 多选题' : '🔘 单选题';
+        // 清理字母中的空格
+        correctAnswer = String(correctAnswer).replace(/\s+/g, '').toUpperCase();
+        const isMulti = correctAnswer.length > 1; typeLabel = isMulti ? '☑️ 多选题' : '🔘 单选题';
         const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
         answerHTML = `<div class="practice-options" id="practiceOptions">`;
         opts.forEach((opt, i) => {
             const letter = letters[i]; const selected = answerData && answerData.includes(letter);
             let cls = 'practice-option' + (selected ? ' selected' : '');
-            if (submitted) { if (correctAnswer.includes(letter)) cls += ' correct'; else if (selected) cls += ' wrong'; }
-            answerHTML += `<div class="${cls}" data-opt="${letter}"><div class="opt-label">${letter}</div><div class="opt-text">${escapeHTML(opt.replace(/^[A-Z]\.\s*/, ''))}</div></div>`;
+            if (submitted) { 
+                if (correctAnswer.includes(letter)) cls += ' correct'; 
+                else if (selected) cls += ' wrong'; 
+            }
+            answerHTML += `<div class="${cls}" data-opt="${letter}"><div class="opt-label">${letter}</div><div class="opt-text">${escapeHTML(opt.replace(/^[A-Z][\.．]\s*/, ''))}</div></div>`;
         });
         answerHTML += `</div>`;
     } else {
@@ -1662,17 +1684,23 @@ function renderTestQuestion() {
         const parsed = getParsedForQuestion(rawQ);
         answerHTML = `<div class="practice-answer-area">${buildFillQuestionHTMLFromParsed(parsed, answerData, submitted)}</div>`;
     }
-    let feedbackHTML = '';
+let feedbackHTML = '';
 if (submitted) {
     const score = getQuestionScore(idx);
     const isCorrect = score >= 5;
     let correctDisplay = '';
     if (isChoice) {
         let displayOpts = ed && ed.options ? ed.options : (cfg.singleOptions[rawQ.q] || cfg.multiOptions[rawQ.q] || ['A. 选项A', 'B. 选项B', 'C. 选项C', 'D. 选项D']);
-        let correctStr = ed && ed.correct ? ed.correct : (cfg.singleCorrect[rawQ.q] || cfg.multiCorrect[rawQ.q] || 'A');
+        let correctStr = String(ed && ed.correct ? ed.correct : (cfg.singleCorrect[rawQ.q] || cfg.multiCorrect[rawQ.q] || 'A')).replace(/\s+/g, '').toUpperCase();
         // 找到正确选项的文本
-        const correctOptText = displayOpts.find(o => o.startsWith(correctStr + '.')) || displayOpts[0];
-        correctDisplay = `<span class="answer-highlight">${escapeHTML(correctStr)}</span> (${escapeHTML(correctOptText.replace(/^[A-Z]\.\s*/, ''))})`;
+        let correctOptText = '';
+        displayOpts.forEach(o => {
+            const match = o.match(/^([A-Z])[\.．]\s*(.*)/);
+            if (match && correctStr.includes(match[1])) {
+                correctOptText += (correctOptText ? ' | ' : '') + match[2];
+            }
+        });
+        correctDisplay = `<span class="answer-highlight">${escapeHTML(correctStr)}</span>${correctOptText ? ' (' + escapeHTML(correctOptText) + ')' : ''}`;
     } else {
         correctDisplay = getParsedForQuestion(rawQ).answers.map(p => `<span class="answer-highlight">${escapeHTML(p)}</span>`).join('<span class="answer-sep">｜</span>');
     }
