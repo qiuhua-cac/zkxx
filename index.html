@@ -1037,20 +1037,33 @@ function renderPracticeList(type, keyword) {
     }
 
     items.forEach(({ item, idx }) => {
-        const div = document.createElement('div');
-        const isSelected = (idx === practiceSelectedIdx);
-        div.className = 'bank-item' + (isSelected ? ' selected' : '');
-        const isPracticeHidden = editDataForList[item.q] && editDataForList[item.q].practiceHidden;
-        div.innerHTML = `
-            <div class="bi-idx">#${idx + 1}</div>
-            ${isPracticeHidden ? '<div class="bi-hidden-tag">🔕 已隐藏</div>' : ''}
-            ${item.isChoice ? '<div class="bi-choice-tag">🔘 选择题</div>' : ''}
-            <div class="bi-content">
-                <div class="bi-q">${escapeHTML(item.q)}</div>
-                <div class="bi-a">答案：${escapeHTML((item.a || '').substring(0, 60))}${(item.a || '').length > 60 ? '…' : ''}</div>
-            </div>
-            <button class="bi-edit-btn" data-idx="${idx}">✏️ 去编辑</button>
-        `;
+    const div = document.createElement('div');
+    const isSelected = (idx === practiceSelectedIdx);
+    div.className = 'bank-item' + (isSelected ? ' selected' : '');
+    const isPracticeHidden = editDataForList[item.q] && editDataForList[item.q].practiceHidden;
+    // 获取选项与正确答案
+    let displayOpts = [];
+    let displayCorrect = '';
+    if (type === 'fill') {
+        displayCorrect = item.a;
+    } else {
+        const ed = editDataForList[item.q] || {};
+        displayOpts = ed.options || cfg.singleOptions[item.q] || cfg.multiOptions[item.q] || ['A. 选项A', 'B. 选项B', 'C. 选项C', 'D. 选项D'];
+        displayCorrect = ed.correct || cfg.singleCorrect[item.q] || cfg.multiCorrect[item.q] || 'A';
+    }
+    const optsHtml = (type !== 'fill' && displayOpts.length > 0) ? `<div style="font-size:12px;color:#475569;margin-top:6px;line-height:1.5;">选项：${displayOpts.map(o=>escapeHTML(o)).join(' | ')}</div>` : '';
+    
+    div.innerHTML = `
+        <div class="bi-idx">#${idx + 1}</div>
+        ${isPracticeHidden ? '<div class="bi-hidden-tag">🔕 已隐藏</div>' : ''}
+        ${item.isChoice ? '<div class="bi-choice-tag">🔘 选择题</div>' : ''}
+        <div class="bi-content">
+            <div class="bi-q">${escapeHTML(item.q)}</div>
+            <div class="bi-a">答案：${escapeHTML((displayCorrect || '').substring(0, 60))}${(displayCorrect || '').length > 60 ? '…' : ''}</div>
+            ${optsHtml}
+        </div>
+        <button class="bi-edit-btn" data-idx="${idx}">✏️ 去编辑</button>
+    `;
         div.addEventListener('click', (e) => {
             if (e.target.classList.contains('bi-edit-btn')) return;
             practiceSelectedIdx = idx; practiceSelectedType = type;
@@ -1173,18 +1186,27 @@ function answerSimilarity(studentAns, correctAns) {
     return String(studentAns).trim() === String(correctAns).trim() ? 1 : 0;
 }
 function getQuestionScore(idx) {
-    const rawQ = practiceQuestions[idx]; const answer = practiceAnswers[idx];
-    if (!rawQ || !answer) return 0;
+    // 兼容测试模式和普通模式
+    const sourceQuestions = (typeof testQuestions !== 'undefined' && testQuestions.length > 0) ? testQuestions : practiceQuestions;
+    const sourceAnswers = (typeof testAnswers !== 'undefined' && testAnswers.length > 0) ? testAnswers : practiceAnswers;
+    
+    const rawQ = sourceQuestions[idx]; 
+    const answer = sourceAnswers[idx];
+    if (!rawQ) return 0;
+    
     const isChoice = rawQ.isChoice === true;
     const cfg = loadPracticeCfg(); const editData = loadPracticeEdit(); const ed = editData[rawQ.q] || {};
     if (isChoice) {
         let correctAnswer = ed.correct || cfg.singleCorrect[rawQ.q] || cfg.multiCorrect[rawQ.q] || 'A';
-        if (correctAnswer.length > 1) {
-            const student = (answer || '').toUpperCase().split('').sort().join('');
-            const correct = correctAnswer.toUpperCase().split('').sort().join('');
-            return student === correct ? 5 : 0;
+        // 统一去除空格并转大写对比
+        const studentSafe = String(answer || '').replace(/\s+/g, '').toUpperCase();
+        const correctSafe = String(correctAnswer).replace(/\s+/g, '').toUpperCase();
+        if (correctSafe.length > 1) {
+            const studentSort = studentSafe.split('').sort().join('');
+            const correctSort = correctSafe.split('').sort().join('');
+            return studentSort === correctSort ? 5 : 0;
         }
-        return (answer || '').toUpperCase() === correctAnswer.toUpperCase() ? 5 : 0;
+        return studentSafe === correctSafe ? 5 : 0;
     }
     const parsed = getParsedForQuestion(rawQ); const correctParts = parsed.answers;
     if (!Array.isArray(answer)) return 0;
@@ -1270,9 +1292,10 @@ function renderPracticeQuestion() {
         });
     }
     if (isChoice && !submitted) {
-        const optionEls = body.querySelectorAll('.practice-option');
-        const isMulti = (ed && ed.correct ? ed.correct.length > 1 : (cfg.multiCorrect[rawQ.q] !== undefined));
-        optionEls.forEach(opt => {
+    const optionEls = body.querySelectorAll('.practice-option');
+    let correctStr = ed && ed.correct ? ed.correct : (cfg.singleCorrect[rawQ.q] || cfg.multiCorrect[rawQ.q] || 'A');
+    const isMulti = String(correctStr).length > 1;
+    optionEls.forEach(opt => {
             opt.addEventListener('click', () => {
                 const letter = opt.dataset.opt;
                 if (!isMulti) { practiceAnswers[idx] = letter; optionEls.forEach(o => o.classList.remove('selected')); opt.classList.add('selected'); }
@@ -1640,16 +1663,21 @@ function renderTestQuestion() {
         answerHTML = `<div class="practice-answer-area">${buildFillQuestionHTMLFromParsed(parsed, answerData, submitted)}</div>`;
     }
     let feedbackHTML = '';
-    if (submitted) {
-        // 临时用 practiceQuestions/practiceAnswers 让 getQuestionScore 工作
-        const sQ = practiceQuestions, sA = practiceAnswers, sS = practiceSubmitted, sI = practiceCurrentIndex;
-        practiceQuestions = testQuestions; practiceAnswers = testAnswers; practiceSubmitted = testSubmitted; practiceCurrentIndex = testCurrentIndex;
-        const score = getQuestionScore(idx);
-        practiceQuestions = sQ; practiceAnswers = sA; practiceSubmitted = sS; practiceCurrentIndex = sI;
-        const isCorrect = score >= 5;
-        let correctDisplay = isChoice ? (ed && ed.correct ? ed.correct : rawQ.a) : getParsedForQuestion(rawQ).answers.map(p => `<span class="answer-highlight">${escapeHTML(p)}</span>`).join('<span class="answer-sep">｜</span>');
-        const explSource = (ed && ed.customExplanation) || rawQ.e;
-        let isPartial = false;
+if (submitted) {
+    const score = getQuestionScore(idx);
+    const isCorrect = score >= 5;
+    let correctDisplay = '';
+    if (isChoice) {
+        let displayOpts = ed && ed.options ? ed.options : (cfg.singleOptions[rawQ.q] || cfg.multiOptions[rawQ.q] || ['A. 选项A', 'B. 选项B', 'C. 选项C', 'D. 选项D']);
+        let correctStr = ed && ed.correct ? ed.correct : (cfg.singleCorrect[rawQ.q] || cfg.multiCorrect[rawQ.q] || 'A');
+        // 找到正确选项的文本
+        const correctOptText = displayOpts.find(o => o.startsWith(correctStr + '.')) || displayOpts[0];
+        correctDisplay = `<span class="answer-highlight">${escapeHTML(correctStr)}</span> (${escapeHTML(correctOptText.replace(/^[A-Z]\.\s*/, ''))})`;
+    } else {
+        correctDisplay = getParsedForQuestion(rawQ).answers.map(p => `<span class="answer-highlight">${escapeHTML(p)}</span>`).join('<span class="answer-sep">｜</span>');
+    }
+    const explSource = (ed && ed.customExplanation) || rawQ.e;
+    let isPartial = false;
         if (!isChoice && !isCorrect) {
             let ok = 0; const parsed = getParsedForQuestion(rawQ); const ans = testAnswers[idx];
             if (Array.isArray(ans)) { for (let i = 0; i < parsed.answers.length; i++) if (answerSimilarity(ans[i], parsed.answers[i]) >= 0.75) ok++; }
@@ -1673,9 +1701,10 @@ function renderTestQuestion() {
         });
     }
     if (isChoice && !submitted) {
-        const optionEls = body.querySelectorAll('.practice-option');
-        const isMulti = (ed && ed.correct ? ed.correct.length > 1 : (cfg.multiCorrect[rawQ.q] !== undefined));
-        optionEls.forEach(opt => {
+    const optionEls = body.querySelectorAll('.practice-option');
+    let correctStr = ed && ed.correct ? ed.correct : (cfg.singleCorrect[rawQ.q] || cfg.multiCorrect[rawQ.q] || 'A');
+    const isMulti = String(correctStr).length > 1;
+    optionEls.forEach(opt => {
             opt.addEventListener('click', () => {
                 const letter = opt.dataset.opt;
                 if (!isMulti) { testAnswers[idx] = letter; optionEls.forEach(o => o.classList.remove('selected')); opt.classList.add('selected'); }
