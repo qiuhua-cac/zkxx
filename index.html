@@ -355,12 +355,16 @@ body{padding:16px;display:flex;flex-direction:column;align-items:center;}
     <div class="modal" style="max-width:720px;max-height:94vh;">
         <div class="practice-container" id="practiceContainer">
             <div class="practice-header">
-                <div class="ph-title">📝 练习模式</div>
-                <div style="display:flex;gap:8px;align-items:center;">
-                    <div class="ph-timer" id="practiceTimer">20:00</div>
-                    <button class="modal-close" id="practiceClose" style="background:rgba(255,255,255,0.2);">✕</button>
-                </div>
-            </div>
+    <div class="ph-title" style="display:flex;align-items:center;gap:8px;">
+        📝 练习模式
+        <button id="practiceRefreshBtn" title="重新抽题" style="background:rgba(255,255,255,0.2);border:none;color:#fff;width:26px;height:26px;border-radius:50%;cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center;transition:0.15s;">🔄</button>
+        <button id="practiceForceSubmitBtn" title="强制交卷" style="background:rgba(255,255,255,0.2);border:none;color:#fff;width:26px;height:26px;border-radius:50%;cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center;transition:0.15s;">📤</button>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;">
+        <div class="ph-timer" id="practiceTimer">20:00</div>
+        <button class="modal-close" id="practiceClose" style="background:rgba(255,255,255,0.2);">✕</button>
+    </div>
+</div>
             <div class="practice-progress" id="practiceProgressBar">
                 <span id="practiceProgressText">第 1 / 20 题</span>
                 <div class="pp-bar"><div class="pp-bar-inner" id="practiceProgressInner" style="width:5%;"></div></div>
@@ -676,6 +680,7 @@ let practiceStartTime = 0;
 let practiceTimerInterval = null;
 let practiceTimeLimit = 20 * 60;
 let practiceFinished = false;
+let practiceElapsedSeconds = 0; // 👈 新增：记录实际用时
 
 let editingPracticeIdx = -1;
 let _practiceResumeMode = 'fresh';
@@ -1427,14 +1432,116 @@ function submitPracticeAnswer() {
     renderPracticeQuestion(); return true;
 }
 function finishPractice() {
-    practiceFinished = true; clearInterval(practiceTimerInterval); clearPracticeState();
-    let total = 0; for (let i = 0; i < 20; i++) total += getQuestionScore(i);
-    const body = document.getElementById('practiceBody'); if (body) body.innerHTML = `<div class="practice-result-card"><div class="pr-score">${Math.round(total * 10) / 10}</div><div class="pr-total">总分 / 100分</div><div class="pr-actions"><button class="btn btn-primary" onclick="document.getElementById('practiceModal').classList.remove('active'); resetPractice();">关闭</button></div></div>`;
-    const bar = document.getElementById('practiceProgressBar'); if (bar) bar.style.display = 'none';
-    const footer = document.getElementById('practiceFooter'); if (footer) footer.style.display = 'none';
+    practiceFinished = true; 
+    clearInterval(practiceTimerInterval); 
+    clearPracticeState();
+    
+    // 记录总用时
+    practiceElapsedSeconds = Math.floor((Date.now() - practiceStartTime) / 1000);
+    const formatTime = (sec) => {
+        const m = Math.floor(sec / 60);
+        const s = sec % 60;
+        return `${m}分${s}秒`;
+    };
+
+    let totalScore = 0;
+    let correctCount = 0;
+    let wrongCount = 0;
+
+    // 遍历所有题目进行判分和结果数据整理
+    for (let i = 0; i < 20; i++) {
+        const score = getQuestionScore(i);
+        totalScore += score;
+        if (score >= 5) correctCount++;
+        else wrongCount++;
+    }
+
+    const body = document.getElementById('practiceBody'); 
+    if (body) {
+        let resultHTML = `
+        <div class="practice-result-card">
+            <div class="pr-score">${Math.round(totalScore * 10) / 10}</div>
+            <div class="pr-total">总分 / 100分</div>
+            <div class="pr-stats" style="margin-bottom:16px;line-height:1.8;font-size:13px;color:#475569;">
+                <div>共20题，每题5分</div>
+                <div>答对 ${correctCount} 题，答错 ${wrongCount} 题</div>
+                <div>用时：${formatTime(practiceElapsedSeconds)}</div>
+            </div>
+        </div>
+        <div class="result-list" style="margin-top:20px; text-align:left;">`;
+
+        // 循环生成每一题的详情
+        for (let i = 0; i < 20; i++) {
+            const rawQ = practiceQuestions[i];
+            const answerData = practiceAnswers[i] || [];
+            const score = getQuestionScore(i);
+            const isCorrect = score >= 5;
+            
+            const cfg = loadPracticeCfg(); 
+            const editData = loadPracticeEdit(); 
+            const ed = editData[rawQ.q] || {};
+            const isChoice = ed.isChoice !== undefined ? ed.isChoice : (rawQ.isChoice === true);
+
+            let studentAnsDisplay = '';
+            let correctAnsDisplay = '';
+
+            if (isChoice) {
+                // 选择题处理
+                studentAnsDisplay = Array.isArray(answerData) ? answerData.join('') : (answerData || '未作答');
+                const correctStr = String(ed.correct || cfg.singleCorrect[rawQ.q] || cfg.multiCorrect[rawQ.q] || 'A').replace(/\s+/g, '').toUpperCase();
+                correctAnsDisplay = correctStr;
+            } else {
+                // 填空题处理
+                const parsed = getParsedForQuestion(rawQ);
+                const studentArr = Array.isArray(answerData) ? answerData : [];
+// 格式化显示学生答案
+studentAnsDisplay = parsed.answers.map((ans, idx) => {
+    const sAns = studentArr[idx] || '';
+    return sAns && sAns.trim() ? escapeHTML(sAns) : '<span style="color:#94a3b8;">未填</span>';
+}).join(' <span style="color:#cbd5e1;">|</span> ');
+                
+                // 格式化显示正确答案
+                correctAnsDisplay = parsed.answers.map(ans => escapeHTML(ans)).join(' <span style="color:#cbd5e1;">|</span> ');
+            }
+
+            const icon = isCorrect ? '<span style="color:#22c55e;font-size:16px;font-weight:bold;">✔</span>' : '<span style="color:#ef4444;font-size:16px;font-weight:bold;">✘</span>';
+            const qColor = isCorrect ? '#1e293b' : '#b91c1c';
+            
+            resultHTML += `
+            <div class="result-item" style="background:#fff;border-radius:10px;padding:12px 14px;margin-bottom:12px;box-shadow:0 2px 8px rgba(0,0,0,0.04);">
+                <div style="font-size:14px;font-weight:600;color:${qColor};margin-bottom:8px;display:flex;gap:6px;">
+                    <span>${i + 1}.</span>
+                    <span>${escapeHTML(rawQ.q)}</span>
+                </div>
+                <div style="font-size:13px;color:#64748b;margin-bottom:4px;display:flex;justify-content:space-between;">
+                    <span>你的答案：${studentAnsDisplay}</span>
+                    ${icon}
+                </div>
+                <div style="font-size:13px;color:#ef4444;font-weight:500;margin-bottom:4px;">
+                    正确答案：${correctAnsDisplay}
+                </div>
+                <div style="text-align:right;font-size:12px;color:#f59e0b;font-weight:700;">
+                    ${score.toFixed(1)}分
+                </div>
+            </div>`;
+        }
+        
+        resultHTML += `</div>
+        <div style="text-align:center; margin-top:20px;">
+            <button class="btn btn-primary" onclick="document.getElementById('practiceModal').classList.remove('active'); resetPractice();">关闭并退出</button>
+        </div>`;
+
+        body.innerHTML = resultHTML;
+    }
+    
+    const bar = document.getElementById('practiceProgressBar'); 
+    if (bar) bar.style.display = 'none';
+    const footer = document.getElementById('practiceFooter'); 
+    if (footer) footer.style.display = 'none';
 }
 function resetPractice() {
     practiceQuestions = []; practiceAnswers = []; practiceSubmitted = []; practiceCurrentIndex = 0; practiceTotalScore = 0; practiceFinished = false;
+    practiceElapsedSeconds = 0; // 👈 重置用时
     if (practiceTimerInterval) clearInterval(practiceTimerInterval); clearPracticeState();
     const bar = document.getElementById('practiceProgressBar'); if (bar) bar.style.display = 'flex';
     const footer = document.getElementById('practiceFooter'); if (footer) footer.style.display = 'flex';
@@ -2047,6 +2154,35 @@ document.addEventListener('DOMContentLoaded', async function () {
         document.querySelectorAll('.tab-content').forEach(c => c.classList.toggle('active', c.id === 'tab-search'));
     });
     on('practiceEntryBtn', 'click', function () { if (practiceFinished) resetPractice(); _practiceResumeMode = 'fresh'; setTimeout(startPractice, 100); });
+
+// 新增：练习模式内的“刷新重抽”与“强制交卷”
+on('practiceRefreshBtn', 'click', function () {
+    if (!confirm('确定要重新随机抽取20题吗？当前答题进度将被清空。')) return;
+    clearPracticeState(); 
+    practiceFinished = false; 
+    _practiceResumeMode = 'fresh';
+    startPractice();
+});
+
+on('practiceForceSubmitBtn', 'click', function () {
+    if (testQuestions.length > 0) return; // 测试模式不干预
+    if (!practiceQuestions.length) return;
+    if (!confirm('确定要强制交卷吗？未作答的题目将算作0分。')) return;
+    // 将所有未作答的题目设为空，避免在评分时报错
+    for (let i = 0; i < 20; i++) {
+        if (!practiceSubmitted[i]) {
+            const rawQ = practiceQuestions[i];
+            const isChoice = rawQ.isChoice === true;
+            if (!isChoice) {
+                practiceAnswers[i] = new Array(getParsedForQuestion(rawQ).answers.length).fill('');
+            } else {
+                practiceAnswers[i] = '';
+            }
+            practiceSubmitted[i] = true;
+        }
+    }
+    finishPractice();
+});
 
     // ---------- 初始化数据（优化加载速度） ----------
 const isSkipSQLInit = sessionStorage.getItem('SKIP_SQL_INIT') === 'true';
