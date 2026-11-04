@@ -627,11 +627,15 @@ function sendToServer(key, data) {
     }).catch(e => console.warn('⚠️ SQL 同步失败，已保留本地缓存', e));
 }
 
-// 注意：这里只包装一次，避免重复嵌套
 const originalGetItem = localStorage.getItem.bind(localStorage);
 const originalSetItem = localStorage.setItem.bind(localStorage);
+const originalRemoveItem = localStorage.removeItem.bind(localStorage);
+
+// 内存锁：记录用户是否刚刚主动退出了登录
+let _justLoggedOut = false;
 
 localStorage.getItem = function(key) {
+    if (key === USER_SESSION_KEY && _justLoggedOut) return null;
     if (key in window._SQL_CACHE) {
         return typeof window._SQL_CACHE[key] === 'string'
             ? window._SQL_CACHE[key]
@@ -642,6 +646,7 @@ localStorage.getItem = function(key) {
 };
 
 localStorage.setItem = function(key, value) {
+    if (key === USER_SESSION_KEY && _justLoggedOut) return; // 阻止退出后的回写
     try { window._SQL_CACHE[key] = JSON.parse(value); }
     catch (e) { window._SQL_CACHE[key] = value; }
     if (SQL_ALLOWED_KEYS.includes(key)) {
@@ -649,6 +654,15 @@ localStorage.setItem = function(key, value) {
     }
     try { originalSetItem(key, value); }
     catch (e) { console.warn('localStorage 写入失败（已忽略）', e); }
+};
+
+localStorage.removeItem = function(key) {
+    if (key === USER_SESSION_KEY) {
+        _justLoggedOut = true; // 标记已退出
+    }
+    delete window._SQL_CACHE[key];
+    try { originalRemoveItem(key); }
+    catch (e) { }
 };
 
 async function initSQLData() {
@@ -760,7 +774,17 @@ function loadUserSession() {
         return obj;
     } catch (e) { return null; }
 }
-function clearUserSession() { try { localStorage.removeItem(USER_SESSION_KEY); } catch (e) { } }
+function clearUserSession() { 
+    try { 
+        delete window._SQL_CACHE[USER_SESSION_KEY];
+        localStorage.removeItem(USER_SESSION_KEY);
+        // 补充物理清除原生方法
+        const rawRemove = Object.getPrototypeOf(localStorage).removeItem;
+        if(rawRemove) rawRemove.call(localStorage, USER_SESSION_KEY);
+    } catch (e) { 
+        console.warn('清除失败', e);
+    } 
+}
 
 function saveAdminSession(admin) { window._adminSession = { username: admin.username, isAdmin: true }; }
 function clearAdminSession() { window._adminSession = null; }
@@ -1433,9 +1457,16 @@ async function doUserRegister() {
 async function doUserLogout() {
     if (!confirm('确定退出普通账号吗？')) return;
     currentUser = null; 
-    clearUserSession(); // 彻底清除本地会话缓存
+    
+    // 彻底双清：内存与本地
+    delete window._SQL_CACHE[USER_SESSION_KEY];
+    localStorage.setItem(USER_SESSION_KEY, null); // 将缓存内容强行置空
+    clearUserSession();
+    
     refreshLoginBtns(); 
-    renderStudyList('');
+    showToast('已退出登录，正在刷新...');
+    // 延迟刷新，确保本地空间清空完毕
+    setTimeout(() => { window.location.reload(); }, 500);
 }
 function refreshLoginBtns() {
     const btn = document.getElementById('loginBtn');
