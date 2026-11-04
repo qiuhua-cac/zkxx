@@ -618,13 +618,13 @@ window._SQL_CACHE = {};
 function sendToServer(key, data) {
     if (!SQL_ALLOWED_KEYS.includes(key)) {
         console.warn('🚫 独立系统拦截非白名单写入:', key);
-        return;
+        return Promise.resolve(false);
     }
-    fetch(API_BASE + '/api/save-data', {
+    return fetch(API_BASE + '/api/save-data', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ [key]: data })
-    }).catch(e => console.warn('⚠️ SQL 同步失败，已保留本地缓存', e));
+    }).then(r => r.ok).catch(e => { console.warn('⚠️ SQL 同步失败，已保留本地缓存', e); return false; });
 }
 
 async function initSQLData() {
@@ -809,13 +809,7 @@ function saveMasteredListForCurrentUser(list) {
 async function syncMasteredToCloud() {
     if (!currentUser || !currentUser.username) return false;
     const map = loadMasteredMap();
-    try {
-        const resp = await fetch(API_BASE + '/api/save-data', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ [MASTERED_KEY]: map })
-        });
-        return resp.ok;
-    } catch (e) { return false; }
+    return sendToServer(MASTERED_KEY, map);
 }
 async function loadMasteredFromCloud() {
     if (!currentUser || !currentUser.username) return;
@@ -872,7 +866,13 @@ function loadBank() {
     } catch (e) { }
     questionBank = defaultBank.map(item => ({ ...item }));
 }
-function persistBank() { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(questionBank)); localStorage.setItem(BANK_TS_KEY, String(nowTs())); } catch (e) { } }
+function persistBank() {
+    try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(questionBank));
+        localStorage.setItem(BANK_TS_KEY, String(nowTs()));
+    } catch (e) { }
+    return questionBank;
+}
 
 function loadPracticeCfg() {
     if (window._SQL_CACHE && window._SQL_CACHE[PRACTICE_CFG_KEY]) return window._SQL_CACHE[PRACTICE_CFG_KEY];
@@ -2071,18 +2071,65 @@ document.addEventListener('DOMContentLoaded', async function () {
     on('practiceEditorCancel', 'click', function () { document.getElementById('practiceEditorModal').classList.remove('active'); });
     on('practiceEditorSave', 'click', savePracticeEditor);
 
-    // ---------- 保存并上传 ----------
-    on('bankSaveUploadBtn', 'click', function () {
-        if (!hasUnsavedChanges) { showToast('没有修改'); return; }
-        const code = prompt('请输入保存密码：');
-        if (code !== 'qiuhua') {
-            if (code !== null) showToast('❌ 密码错误，保存已取消');
-            return;
-        }
-        persistBank(); savePracticeCfg(loadPracticeCfg()); savePracticeEdit(loadPracticeEdit());
-        hasUnsavedChanges = false; showToast('✅ 已正式保存并上传到 SQL');
-        setTimeout(() => location.reload(), 800);
-    });
+// ---------- 保存并上传 ----------
+on('bankSaveUploadBtn', 'click', async function () {
+    if (!hasUnsavedChanges) { showToast('没有修改'); return; }
+
+    const code = prompt('请输入保存密码：');
+    if (code !== 'qiuhua') {
+        if (code !== null) showToast('❌ 密码错误，保存已取消');
+        return;
+    }
+
+    const btn = document.getElementById('bankSaveUploadBtn');
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ 上传中…'; }
+
+    try {
+        // 1. 先落本地
+        persistBank();
+        const cfg = loadPracticeCfg();
+        savePracticeCfg(cfg);
+        const editData = loadPracticeEdit();
+        savePracticeEdit(editData);
+
+        // 2. 同步到 _SQL_CACHE，避免刷新后读回旧数据
+        window._SQL_CACHE[STORAGE_KEY] = questionBank;
+        window._SQL_CACHE[PRACTICE_CFG_KEY] = cfg;
+        window._SQL_CACHE[PRACTICE_EDIT_KEY] = editData;
+        window._SQL_CACHE[BANK_TS_KEY] = String(nowTs());
+
+        // 3. 真正上传到 SQL（一次性打包全部数据）
+        const ts = String(nowTs());
+        const payload = {
+            [STORAGE_KEY]: questionBank,
+            [PRACTICE_CFG_KEY]: cfg,
+            [PRACTICE_EDIT_KEY]: editData,
+            [BANK_TS_KEY]: ts
+        };
+
+        const resp = await fetch(API_BASE + '/api/save-data', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const json = await resp.json().catch(() => ({}));
+        if (json && json.success === false) throw new Error(json.message || '服务端返回失败');
+
+        hasUnsavedChanges = false;
+        showToast('✅ 已正式保存并上传到 SQL');
+
+        // 4. 带时间戳刷新，绕过缓存
+        setTimeout(() => {
+            location.replace(location.href.split('#')[0] + '?t=' + Date.now());
+        }, 900);
+    } catch (err) {
+        console.error('上传失败:', err);
+        if (btn) { btn.disabled = false; btn.textContent = '💾 保存并上传'; }
+        showToast('❌ 上传失败：' + (err.message || err) + '，本地已保存');
+    }
+});
 
     // ---------- 管理后台关闭 ----------
     on('bankClose', 'click', function () { document.getElementById('bankModal').classList.remove('active'); });
