@@ -221,6 +221,20 @@ body{padding:16px;display:flex;flex-direction:column;align-items:center;}
 .editor-help-note .red-tip { color: #dc2626; font-weight: 600; display: block; margin-top: 4px; }
 /* ========================================= */
 
+/* ===== 新增：自定义优雅弹窗样式 ===== */
+.custom-overlay { position: fixed; inset: 0; background: rgba(15,30,50,0.55); z-index: 99999; display: none; align-items: center; justify-content: center; padding: 16px; backdrop-filter: blur(3px); }
+.custom-overlay.active { display: flex; }
+.custom-dialog { background: #fff; border-radius: 16px; width: 100%; max-width: 360px; padding: 24px 20px; box-shadow: 0 20px 50px rgba(0,0,0,0.3); animation: modalIn 0.25s ease-out; }
+.custom-dialog p { font-size: 15px; color: #1e293b; line-height: 1.6; margin-bottom: 20px; font-weight: 500; }
+.custom-dialog input { width: 100%; padding: 12px 14px; font-size: 15px; border: 1.5px solid #c8d9ec; border-radius: 10px; outline: none; margin-bottom: 20px; transition: 0.2s; background: #f9fcff; }
+.custom-dialog input:focus { border-color: #3b82f6; background: #fff; box-shadow: 0 0 0 3px rgba(59,130,246,0.15); }
+.custom-dialog-btns { display: flex; gap: 12px; justify-content: flex-end; }
+.custom-dialog-btns button { font-size: 14px; padding: 9px 20px; border-radius: 8px; border: 1px solid #c8d9ec; background: #fff; color: #475569; cursor: pointer; font-weight: 500; transition: 0.15s; }
+.custom-dialog-btns button:hover { background: #f1f5f9; }
+.custom-dialog-btns button.primary { background: linear-gradient(135deg,#3b82f6,#2563eb); color: #fff; border: none; }
+.custom-dialog-btns button.primary:hover { background: linear-gradient(135deg,#2563eb,#1d4ed8); }
+/* ===================================== */
+
 /* 移动端适配 */
 @media (max-width: 600px) {
     body{padding:6px;}
@@ -293,6 +307,29 @@ body{padding:16px;display:flex;flex-direction:column;align-items:center;}
 </div>
 
 <div class="toast" id="toast"></div>
+
+<!-- 自定义确认弹窗 -->
+<div class="custom-overlay" id="customConfirmModal">
+    <div class="custom-dialog">
+        <p id="customConfirmMsg">提示内容</p>
+        <div class="custom-dialog-btns">
+            <button id="customConfirmCancel">取消</button>
+            <button id="customConfirmOk" class="primary">确定</button>
+        </div>
+    </div>
+</div>
+
+<!-- 自定义输入弹窗 -->
+<div class="custom-overlay" id="customPromptModal">
+    <div class="custom-dialog">
+        <p id="customPromptMsg">请输入内容</p>
+        <input type="text" id="customPromptInput" placeholder="请输入..." autocomplete="off">
+        <div class="custom-dialog-btns">
+            <button id="customPromptCancel">取消</button>
+            <button id="customPromptOk" class="primary">确认</button>
+        </div>
+    </div>
+</div>
 
 <!-- 登录弹窗 -->
 <div class="modal-overlay" id="loginModal">
@@ -731,6 +768,56 @@ function formatAnswerHTML(ans) {
     const allShort = parts.every(p => p.length <= 8);
     if (allShort) { return parts.map(p => escapeHTML(p)).join(' <span class="ans-sep">‖</span> '); }
     return parts.map(p => `<span class="ans-line">${escapeHTML(p)}</span>`).join('');
+}
+
+// ===== 新增：自定义弹窗替代原生 confirm/prompt =====
+function showCustomConfirm(msg) {
+    return new Promise((resolve) => {
+        const modal = document.getElementById('customConfirmModal');
+        document.getElementById('customConfirmMsg').textContent = msg;
+        modal.classList.add('active');
+        
+        const okBtn = document.getElementById('customConfirmOk');
+        const cancelBtn = document.getElementById('customConfirmCancel');
+        
+        const cleanup = () => {
+            modal.classList.remove('active');
+            okBtn.onclick = null;
+            cancelBtn.onclick = null;
+        };
+        
+        okBtn.onclick = () => { cleanup(); resolve(true); };
+        cancelBtn.onclick = () => { cleanup(); resolve(false); };
+    });
+}
+
+function showCustomPrompt(msg, placeholder = '') {
+    return new Promise((resolve) => {
+        const modal = document.getElementById('customPromptModal');
+        document.getElementById('customPromptMsg').textContent = msg;
+        const input = document.getElementById('customPromptInput');
+        input.value = '';
+        input.placeholder = placeholder;
+        modal.classList.add('active');
+        setTimeout(() => input.focus(), 100);
+
+        const okBtn = document.getElementById('customPromptOk');
+        const cancelBtn = document.getElementById('customPromptCancel');
+
+        const cleanup = () => {
+            modal.classList.remove('active');
+            okBtn.onclick = null;
+            cancelBtn.onclick = null;
+            input.onkeydown = null;
+        };
+
+        okBtn.onclick = () => { const val = input.value; cleanup(); resolve(val); };
+        cancelBtn.onclick = () => { cleanup(); resolve(null); };
+        
+        input.onkeydown = (e) => {
+            if (e.key === 'Enter') { const val = input.value; cleanup(); resolve(val); }
+        };
+    });
 }
 
 // ===== 安全绑定 helper：元素不存在只警告，不抛错 =====
@@ -2156,18 +2243,18 @@ document.addEventListener('DOMContentLoaded', async function () {
     on('practiceEntryBtn', 'click', function () { if (practiceFinished) resetPractice(); _practiceResumeMode = 'fresh'; setTimeout(startPractice, 100); });
 
 // 新增：练习模式内的“刷新重抽”与“强制交卷”
-on('practiceRefreshBtn', 'click', function () {
-    if (!confirm('确定要重新随机抽取20题吗？当前答题进度将被清空。')) return;
+on('practiceRefreshBtn', 'click', async function () {
+    if (!await showCustomConfirm('确定要重新随机抽取20题吗？当前答题进度将被清空。')) return;
     clearPracticeState(); 
     practiceFinished = false; 
     _practiceResumeMode = 'fresh';
     startPractice();
 });
 
-on('practiceForceSubmitBtn', 'click', function () {
+on('practiceForceSubmitBtn', 'click', async function () {
     if (testQuestions.length > 0) return; // 测试模式不干预
     if (!practiceQuestions.length) return;
-    if (!confirm('确定要强制交卷吗？未作答的题目将算作0分。')) return;
+    if (!await showCustomConfirm('确定要强制交卷吗？未作答的题目将算作0分。')) return;
     // 将所有未作答的题目设为空，避免在评分时报错
     for (let i = 0; i < 20; i++) {
         if (!practiceSubmitted[i]) {
@@ -2247,13 +2334,13 @@ try { renderStudyList(''); } catch (e) { console.warn('renderStudyList 失败', 
         hasUnsavedChanges = true; showToast('已修改 (仅本地保存，未上传SQL)');
         renderBankList((document.getElementById('bankSearch') || {}).value || ''); showEditForm(selectedIdx);
     });
-    on('editDelete', 'click', function () {
-        if (selectedIdx < 0 || !confirm('确认删除？')) return;
-        questionBank.splice(selectedIdx, 1); hasUnsavedChanges = true; selectedIdx = -1;
-        const f = document.getElementById('editForm'); if (f) f.style.display = 'none';
-        showToast('已删除 (仅本地保存，未上传SQL)');
-        renderBankList((document.getElementById('bankSearch') || {}).value || '');
-    });
+    on('editDelete', 'click', async function () {
+    if (selectedIdx < 0 || !await showCustomConfirm('确认删除本题？此操作无法撤销。')) return;
+    questionBank.splice(selectedIdx, 1); hasUnsavedChanges = true; selectedIdx = -1;
+    const f = document.getElementById('editForm'); if (f) f.style.display = 'none';
+    showToast('已删除 (仅本地保存，未上传SQL)');
+    renderBankList((document.getElementById('bankSearch') || {}).value || '');
+});
 
     // ---------- 新增题目 ----------
     on('addClear', 'click', function () {
@@ -2360,11 +2447,11 @@ try { renderStudyList(''); } catch (e) { console.warn('renderStudyList 失败', 
 on('bankSaveUploadBtn', 'click', async function () {
     if (!hasUnsavedChanges) { showToast('没有修改'); return; }
 
-    const code = prompt('请输入保存密码：');
-    if (code !== 'qiuhua') {
-        if (code !== null) showToast('❌ 密码错误，保存已取消');
-        return;
-    }
+    const code = await showCustomPrompt('确认保存并上传到 SQL 数据库？(输入确认代码)', '请输入确认代码');
+if (code !== 'qiuhua') {
+    if (code !== null) showToast('❌ 密码错误，保存已取消');
+    return;
+}
 
     const btn = document.getElementById('bankSaveUploadBtn');
     if (btn) { btn.disabled = true; btn.textContent = '⏳ 上传中…'; }
