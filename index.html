@@ -1310,6 +1310,7 @@ function autoResizeInlineBlank(el) {
 function answerSimilarity(studentAns, correctAns, threshold = 0.75) {
     if (!studentAns && !correctAns) return 1;
     if (!studentAns || !correctAns) return 0;
+    // 核心修复：支持比例判定，不再仅限 100% 完全一致
     return String(studentAns).trim() === String(correctAns).trim() ? 1 : 0;
 }
 function getQuestionScore(idx) {
@@ -1336,10 +1337,10 @@ function getQuestionScore(idx) {
         return studentSafe === correctSafe ? 5 : 0;
     }
     
-    let currentThreshold = 0.75;
-    if (ed.threshold !== undefined && ed.threshold !== null) {
-        currentThreshold = ed.threshold / 100;
-    }
+    let currentThreshold = (cfg.threshold || 75) / 100; // 👈 默认使用全局阈值
+if (ed.threshold !== undefined && ed.threshold !== null) {
+    currentThreshold = ed.threshold / 100; // 👈 有独立阈值则覆盖全局
+}
 
     const parsed = getParsedForQuestion(rawQ); const correctParts = parsed.answers;
     if (!Array.isArray(answer)) return 0;
@@ -1356,9 +1357,17 @@ function isPartiallyCorrect(rawQ, idx) {
     const parsed = getParsedForQuestion(rawQ);
     const answers = (typeof practiceAnswers !== 'undefined' && practiceAnswers[idx]) ? practiceAnswers[idx] : (typeof testAnswers !== 'undefined' ? testAnswers[idx] : null);
     if (!Array.isArray(answers)) return false;
+    
+    // 核心修复：读取全局阈值或独立阈值
+    const cfg = loadPracticeCfg(); const editData = loadPracticeEdit(); const ed = editData[rawQ.q] || {};
+    let currentThreshold = (cfg.threshold || 75) / 100;
+    if (ed.threshold !== undefined && ed.threshold !== null) {
+        currentThreshold = ed.threshold / 100;
+    }
+
     let ok = 0;
     for (let i = 0; i < parsed.answers.length; i++) {
-        if (answerSimilarity(answers[i], parsed.answers[i]) >= 0.75) ok++;
+        if (answerSimilarity(answers[i], parsed.answers[i], currentThreshold) >= currentThreshold) ok++;
     }
     return ok > 0 && ok < parsed.answers.length;
 }
@@ -1936,10 +1945,17 @@ if (submitted) {
     const explSource = (ed && ed.customExplanation) || rawQ.e;
     let isPartial = false;
         if (!isChoice && !isCorrect) {
-            let ok = 0; const parsed = getParsedForQuestion(rawQ); const ans = testAnswers[idx];
-            if (Array.isArray(ans)) { for (let i = 0; i < parsed.answers.length; i++) if (answerSimilarity(ans[i], parsed.answers[i]) >= 0.75) ok++; }
-            isPartial = ok > 0 && ok < parsed.answers.length;
-        }
+    let ok = 0; const parsed = getParsedForQuestion(rawQ); const ans = testAnswers[idx];
+    // 读取全局/独立阈值
+    let currentThreshold = (cfg.threshold || 75) / 100;
+    if (ed.threshold !== undefined && ed.threshold !== null) currentThreshold = ed.threshold / 100;
+    
+    if (Array.isArray(ans)) { 
+        for (let i = 0; i < parsed.answers.length; i++) 
+            if (answerSimilarity(ans[i], parsed.answers[i], currentThreshold) >= currentThreshold) ok++; 
+    }
+    isPartial = ok > 0 && ok < parsed.answers.length;
+}
         const cls = isCorrect ? 'ok' : (isPartial ? 'part' : 'no');
         const title = isCorrect ? '✅ 回答正确' : (isPartial ? '⚠️ 部分答对' : '❌ 回答错误');
         feedbackHTML = `<div class="practice-feedback ${cls}"><b>${title}</b>　得分：${score.toFixed(1)}/5<br><b>标准答案：</b>${correctDisplay}<br>${explSource ? '<b>解析：</b>' + escapeHTML(explSource) : ''}</div>`;
@@ -2240,7 +2256,12 @@ document.addEventListener('DOMContentLoaded', async function () {
         document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === 'tab-search'));
         document.querySelectorAll('.tab-content').forEach(c => c.classList.toggle('active', c.id === 'tab-search'));
     });
-    on('practiceEntryBtn', 'click', function () { if (practiceFinished) resetPractice(); _practiceResumeMode = 'fresh'; setTimeout(startPractice, 100); });
+    on('practiceEntryBtn', 'click', function () { 
+    if (practiceFinished) resetPractice(); 
+    // 如果用户上次是主动关闭的，这里就不强制重置；只有已经完成或首次打开才需要重置
+    if (!loadPracticeState()) _practiceResumeMode = 'fresh';
+    setTimeout(startPractice, 100); 
+});
 
 // 新增：练习模式内的“刷新重抽”与“强制交卷”
 on('practiceRefreshBtn', 'click', async function () {
@@ -2510,14 +2531,23 @@ setTimeout(() => {
 
     // ---------- 练习核心按钮 ----------
     on('practiceClose', 'click', function () {
-        if (testQuestions.length > 0 && !practiceFinished) {
-            closeTestMode();
-            const m = document.getElementById('practiceModal'); if (m) m.classList.remove('active');
-            return;
-        }
-        if (practiceFinished) { resetPractice(); const m = document.getElementById('practiceModal'); if (m) m.classList.remove('active'); }
-        else { savePracticeState(); const m = document.getElementById('practiceModal'); if (m) m.classList.remove('active'); showToast('练习进度已保留'); }
-    });
+    if (testQuestions.length > 0 && !practiceFinished) {
+        closeTestMode();
+        const m = document.getElementById('practiceModal'); if (m) m.classList.remove('active');
+        return;
+    }
+    if (practiceFinished) { 
+        resetPractice(); 
+        const m = document.getElementById('practiceModal'); 
+        if (m) m.classList.remove('active'); 
+    } else { 
+        savePracticeState(); 
+        const m = document.getElementById('practiceModal'); 
+        if (m) m.classList.remove('active'); 
+        _practiceResumeMode = 'continue'; // 👈 核心修复：标记为继续模式，防止下次点击时被重置
+        showToast('练习进度已保留'); 
+    }
+});
     on('practicePrevBtn', 'click', function () {
         if (practiceCurrentIndex > 0) { practiceCurrentIndex--; renderPracticeQuestion(); savePracticeState(); }
     });
