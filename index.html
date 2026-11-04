@@ -210,6 +210,17 @@ body{padding:16px;display:flex;flex-direction:column;align-items:center;}
 .btn-practice-edit{background:#ede9fe;border-color:#a78bfa;color:#5b21b6;transition:0.2s;font-weight:600;}
 .btn-practice-edit:hover{background:#ddd6fe;border-color:#8b5cf6;}
 
+/* ===== 新增：独立阈值与帮助说明样式 ===== */
+.threshold-check-wrap { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #475569; cursor: pointer; margin-left: auto; user-select: none; }
+.threshold-check-wrap input[type="checkbox"] { width: 16px; height: 16px; accent-color: #3b82f6; cursor: pointer; }
+.threshold-input { width: 52px; padding: 4px 6px; font-size: 12px; border: 1px solid #c8d9ec; border-radius: 6px; outline: none; text-align: center; transition: 0.2s; }
+.threshold-input:focus { border-color: #3b82f6; box-shadow: 0 0 0 2px rgba(59,130,246,0.15); }
+.threshold-input:disabled { background: #f1f5f9; color: #94a3b8; cursor: not-allowed; }
+.editor-help-note { font-size: 11px; color: #8aa2c0; line-height: 1.8; margin-top: 8px; background: #f8fafc; padding: 10px; border-radius: 8px; border: 1px dashed #e2e8f0; }
+.editor-help-note span { display: inline-flex; align-items: center; margin-right: 10px; }
+.editor-help-note .red-tip { color: #dc2626; font-weight: 600; display: block; margin-top: 4px; }
+/* ========================================= */
+
 /* 移动端适配 */
 @media (max-width: 600px) {
     body{padding:6px;}
@@ -1059,8 +1070,10 @@ function renderPracticeList(type, keyword) {
     let answerDisplayHTML = '';
 
     if (type === 'fill') {
-        answerDisplayHTML = `<span style="color:#b91c1c;font-weight:600;">${escapeHTML(item.a)}</span>`;
-    } else {
+    const hasCustomTh = (editDataForList[item.q] && editDataForList[item.q].threshold !== undefined && editDataForList[item.q].threshold !== null);
+    const thTag = hasCustomTh ? `<span style="font-size:10px;color:#3b82f6;background:#dbeafe;padding:1px 6px;border-radius:4px;margin-left:6px;">🎯 ${editDataForList[item.q].threshold}%</span>` : '';
+    answerDisplayHTML = `<span style="color:#b91c1c;font-weight:600;">${escapeHTML(item.a)}</span>${thTag}`;
+} else {
         const ed = editDataForList[item.q] || {};
         displayOpts = ed.options || cfg.singleOptions[item.q] || cfg.multiOptions[item.q] || ['A. 选项A', 'B. 选项B', 'C. 选项C', 'D. 选项D'];
         correctStr = ed.correct || cfg.singleCorrect[item.q] || cfg.multiCorrect[item.q] || 'A';
@@ -1202,13 +1215,12 @@ function autoResizeInlineBlank(el) {
     let targetW = Math.max(90, Math.min(ctx.measureText(text).width + 30, (el.parentElement ? el.parentElement.clientWidth : 300) - 8));
     el.style.width = targetW + 'px';
 }
-function answerSimilarity(studentAns, correctAns) {
+function answerSimilarity(studentAns, correctAns, threshold = 0.75) {
     if (!studentAns && !correctAns) return 1;
     if (!studentAns || !correctAns) return 0;
     return String(studentAns).trim() === String(correctAns).trim() ? 1 : 0;
 }
 function getQuestionScore(idx) {
-    // 兼容测试模式和普通模式
     const isTest = (typeof testQuestions !== 'undefined' && testQuestions.length > 0 && typeof testAnswers !== 'undefined' && testAnswers.length > 0 && testQuestions[idx] !== undefined);
     const sourceQuestions = isTest ? testQuestions : practiceQuestions;
     const sourceAnswers = isTest ? testAnswers : practiceAnswers;
@@ -1217,13 +1229,11 @@ function getQuestionScore(idx) {
     const answer = sourceAnswers[idx];
     if (!rawQ) return 0;
     
-    // 统一判断是否是选择题（不管是元数据还是练习编辑后的数据）
     const cfg = loadPracticeCfg(); const editData = loadPracticeEdit(); const ed = editData[rawQ.q] || {};
     const isChoice = ed.isChoice !== undefined ? ed.isChoice : (rawQ.isChoice === true);
     
     if (isChoice) {
         let correctAnswer = ed.correct || cfg.singleCorrect[rawQ.q] || cfg.multiCorrect[rawQ.q] || 'A';
-        // 统一去除空格、标点并转大写对比
         const studentSafe = String(answer || '').replace(/[\s\.．]/g, '').toUpperCase();
         const correctSafe = String(correctAnswer).replace(/[\s\.．]/g, '').toUpperCase();
         if (correctSafe.length > 1) {
@@ -1233,10 +1243,18 @@ function getQuestionScore(idx) {
         }
         return studentSafe === correctSafe ? 5 : 0;
     }
+    
+    let currentThreshold = 0.75;
+    if (ed.threshold !== undefined && ed.threshold !== null) {
+        currentThreshold = ed.threshold / 100;
+    }
+
     const parsed = getParsedForQuestion(rawQ); const correctParts = parsed.answers;
     if (!Array.isArray(answer)) return 0;
     const perBlank = 5 / correctParts.length; let total = 0;
-    for (let i = 0; i < correctParts.length; i++) { if (answerSimilarity(answer[i], correctParts[i]) >= 0.75) total += perBlank; }
+    for (let i = 0; i < correctParts.length; i++) { 
+        if (answerSimilarity(answer[i], correctParts[i], currentThreshold) >= currentThreshold) total += perBlank; 
+    }
     return total;
 }
 // ===== 之前缺失的函数，这里补齐 =====
@@ -1819,6 +1837,9 @@ function openPracticeEditor(idx) {
     const options = ed.options || cfg.singleOptions[rawQ.q] || cfg.multiOptions[rawQ.q] || ['A. 选项A', 'B. 选项B', 'C. 选项C', 'D. 选项D'];
     const correct = ed.correct || cfg.singleCorrect[rawQ.q] || cfg.multiCorrect[rawQ.q] || 'A';
     const orderSetting = ed.orderSetting || 'all';
+    
+    const hasCustomThreshold = ed.threshold !== undefined && ed.threshold !== null;
+    const customThresholdVal = hasCustomThreshold ? ed.threshold : 75;
 
     body.innerHTML = `
         <div class="editor-section">
@@ -1832,14 +1853,30 @@ function openPracticeEditor(idx) {
                 <button type="button" data-action="order-end">🔀 乱序结束 (&lt;乱序\\&gt;)</button>
             </div>
             <div class="editor-content" id="editorContent" contenteditable="true"></div>
-            <div class="editor-help">💡 点击上方工具按钮在光标位置插入标记。标记只用于评分规则，不会显示在练习界面。</div>
+            <div class="editor-help-note">
+                <div>💡 点击上方工具按钮在光标位置插入标记。</div>
+                <div>📥 <b>答案标记：</b> 标记之间的内容为答案。</div>
+                <div>🔒 <b>固定开始/结束：</b> 标记之间的答案不允许乱序。</div>
+                <div>🔀 <b>乱序开始/结束：</b> 标记之间的答案允许乱序。</div>
+                <span class="red-tip">⚠️ 注意：这些标记只用于评分规则，不会显示在练习界面。</span>
+            </div>
         </div>
         <div class="editor-section">
             <h4>🔄 乱序设置</h4>
-            <div class="order-setting">
-                <label><input type="radio" name="orderSetting" value="all" ${orderSetting === 'all' ? 'checked' : ''}> 全部允许乱序（默认）</label>
-                <label><input type="radio" name="orderSetting" value="none" ${orderSetting === 'none' ? 'checked' : ''}> 不允许乱序</label>
+            <div class="order-setting" style="flex-wrap:wrap; gap:12px;">
+                <label style="margin-right:8px;"><input type="radio" name="orderSetting" value="all" ${orderSetting === 'all' ? 'checked' : ''}> 全部允许乱序 (默认)</label>
+                <label style="margin-right:8px;"><input type="radio" name="orderSetting" value="none" ${orderSetting === 'none' ? 'checked' : ''}> 不允许乱序</label>
                 <label><input type="radio" name="orderSetting" value="partial" ${orderSetting === 'partial' ? 'checked' : ''}> 部分乱序</label>
+                <div class="threshold-check-wrap">
+                    <input type="checkbox" id="editorCustomThresholdCheck" ${hasCustomThreshold ? 'checked' : ''}>
+                    <span>🎯 本题独立阈值</span>
+                    <input type="number" id="editorCustomThresholdInput" class="threshold-input" min="1" max="100" value="${customThresholdVal}" ${hasCustomThreshold ? '' : 'disabled'}> %
+                </div>
+            </div>
+            <div class="editor-help-note" style="border:none; padding:4px 0; background:transparent;">
+                <div>💡 <b>全部允许乱序：</b>所有答案框可任意交换。</div>
+                <div>💡 <b>不允许乱序：</b>必须按顺序填写。</div>
+                <div>💡 <b>部分乱序：</b>必须在题目中用 🔒 和 🔀 标记圈定范围，否则无法保存。</div>
             </div>
         </div>
         <div class="editor-section">
@@ -1854,7 +1891,6 @@ function openPracticeEditor(idx) {
             </div>
         </div>`;
 
-    // 渲染编辑器内容（保留标记）
     const el = document.getElementById('editorContent');
     let html = escapeHTML(customQuestion);
     html = html.replace(/&lt;\/答案&gt;/g, '<span class="marker-answer">&lt;/答案&gt;</span>')
@@ -1890,6 +1926,16 @@ function openPracticeEditor(idx) {
         row.querySelector('.pe-opt-del').addEventListener('click', () => row.remove());
         container.appendChild(row);
     });
+
+    const thresholdCheck = document.getElementById('editorCustomThresholdCheck');
+    const thresholdInput = document.getElementById('editorCustomThresholdInput');
+    if (thresholdCheck && thresholdInput) {
+        thresholdCheck.addEventListener('change', function() {
+            thresholdInput.disabled = !this.checked;
+            if (this.checked && !thresholdInput.value) thresholdInput.value = 75;
+        });
+    }
+
     modal.classList.add('active');
 }
 function insertTextAtCursor(editor, text) {
@@ -1930,10 +1976,28 @@ function savePracticeEditor() {
     const correctEl = document.getElementById('editorCorrect');
     const correct = correctEl ? correctEl.value.trim().toUpperCase() : '';
     const orderSetting = (document.querySelector('input[name="orderSetting"]:checked') || {}).value || 'all';
+    
+    const isCustomThreshold = document.getElementById('editorCustomThresholdCheck')?.checked;
+    let customThreshold = null;
+    if (isCustomThreshold) {
+        const inputVal = parseInt(document.getElementById('editorCustomThresholdInput').value);
+        customThreshold = isNaN(inputVal) ? 75 : Math.max(1, Math.min(100, inputVal));
+    }
+
     let customAnswer = '';
     try { const parsed = parseQuestionWithAnswers(customQuestion, orderSetting); customAnswer = parsed.answers.join('｜'); } catch (e) { }
+    
     const editData = loadPracticeEdit();
-    editData[rawQ.q] = { customQuestion: customQuestion || rawQ.q, customAnswer, isChoice, options: isChoice ? options : null, correct: isChoice ? correct : null, orderSetting, updatedAt: nowTs() };
+    editData[rawQ.q] = { 
+        customQuestion: customQuestion || rawQ.q, 
+        customAnswer, 
+        isChoice, 
+        options: isChoice ? options : null, 
+        correct: isChoice ? correct : null, 
+        orderSetting, 
+        threshold: customThreshold,
+        updatedAt: nowTs() 
+    };
     savePracticeEdit(editData); hasUnsavedChanges = true;
     const modal = document.getElementById('practiceEditorModal'); if (modal) modal.classList.remove('active');
     showToast('✅ 练习编辑已保存');
