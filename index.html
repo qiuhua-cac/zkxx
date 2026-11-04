@@ -752,7 +752,16 @@ function clearAdminSession() { window._adminSession = null; }
 // ==================== 用户 API ====================
 async function fetchUsersJson() {
     try {
-        const resp = await fetch(API_BASE + '/api/get-all-data?t=' + Date.now(), { cache: 'no-store' });
+        // 优化：直接拉取全部数据时，服务器端可能返回全部 bank，这里增加超时控制，加速失败反馈
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 8000); // 8秒超时
+        
+        const resp = await fetch(API_BASE + '/api/get-all-data?t=' + Date.now(), { 
+            cache: 'no-store',
+            signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+        
         if (!resp.ok) return null;
         const json = await resp.json();
         if (!json.success) return null;
@@ -760,7 +769,10 @@ async function fetchUsersJson() {
         if (!raw) return { users: {} };
         if (typeof raw === 'string') { try { return { users: JSON.parse(raw) || {} }; } catch (e) { return { users: {} }; } }
         return { users: raw || {} };
-    } catch (e) { return null; }
+    } catch (e) { 
+        console.warn('拉取用户数据失败或超时', e);
+        return null; 
+    }
 }
 async function pushUsersJson(usersObj) {
     try {
@@ -1430,11 +1442,16 @@ async function doUserLogin() {
     // 普通账号登录（如果已经登录普通账号，拦截）
     if (currentUser) { showToast('❌ 已经登录普通账号，不可重复登录'); return; }
     const res = await loginUser_api(u, p);
-    if (!res.ok) { showToast(res.msg); return; }
-    currentUser = { username: u, password: p }; saveUserSession(currentUser); refreshLoginBtns();
-    const m = document.getElementById('loginModal'); if (m) m.classList.remove('active');
-    showToast('✅ 登录成功');
-    loadMasteredFromCloud().then(() => renderStudyList((document.getElementById('studySearch') || {}).value || ''));
+if (!res.ok) { showToast(res.msg); return; }
+currentUser = { username: u, password: p }; saveUserSession(currentUser); refreshLoginBtns();
+const m = document.getElementById('loginModal'); if (m) m.classList.remove('active');
+showToast('✅ 登录成功');
+
+// 优化：先立刻渲染 UI，已会题目同步放到后台慢慢拉，不再让用户干等
+renderStudyList((document.getElementById('studySearch') || {}).value || '');
+loadMasteredFromCloud().then(() => {
+    renderStudyList((document.getElementById('studySearch') || {}).value || '');
+});
 }
 async function doUserRegister() {
     const uEl = document.getElementById('registerUser'); const p1El = document.getElementById('registerPass'); const p2El = document.getElementById('registerPass2');
@@ -1967,12 +1984,23 @@ document.addEventListener('DOMContentLoaded', async function () {
     });
     on('practiceEntryBtn', 'click', function () { if (practiceFinished) resetPractice(); _practiceResumeMode = 'fresh'; setTimeout(startPractice, 100); });
 
-    // ---------- 初始化数据 ----------
+    // ---------- 初始化数据（优化加载速度） ----------
+const isSkipSQLInit = sessionStorage.getItem('SKIP_SQL_INIT') === 'true';
+if (isSkipSQLInit) {
+    // 如果是从“保存并上传”跳转过来的，直接使用本地缓存秒开，因为刚刚上传的数据就是最新的
+    sessionStorage.removeItem('SKIP_SQL_INIT');
+    console.log('⚡ 检测到刚刚保存，已跳过云端加载，直接使用本地缓存');
+    // 强行将 _SQL_CACHE 置空，让 loadBank 走 localStorage 读取最新刚刚保存的内容
+    window._SQL_CACHE = {}; 
+} else {
+    // 正常打开页面，拉取云端数据
     try { await initSQLData(); } catch (e) { console.warn('initSQLData 失败', e); }
-    try { loadBank(); } catch (e) { console.warn('loadBank 失败', e); questionBank = defaultBank.map(x => ({ ...x })); }
-    try { refreshLoginBtns(); } catch (e) { }
-    try { tryRestoreUserSession(); } catch (e) { }
-    try { renderStudyList(''); } catch (e) { console.warn('renderStudyList 失败', e); }
+}
+
+try { loadBank(); } catch (e) { console.warn('loadBank 失败', e); questionBank = defaultBank.map(x => ({ ...x })); }
+try { refreshLoginBtns(); } catch (e) { }
+try { tryRestoreUserSession(); } catch (e) { }
+try { renderStudyList(''); } catch (e) { console.warn('renderStudyList 失败', e); }
 
     // ---------- 学习区 ----------
     on('studySearch', 'input', function (e) { renderStudyList(e.target.value); });
@@ -2175,12 +2203,13 @@ on('bankSaveUploadBtn', 'click', async function () {
         if (json && json.success === false) throw new Error(json.message || '服务端返回失败');
 
         hasUnsavedChanges = false;
-        showToast('✅ 已正式保存并上传到 SQL');
+showToast('✅ 已正式保存并上传到 SQL');
 
-        // 4. 带时间戳刷新，绕过缓存
-        setTimeout(() => {
-            location.replace(location.href.split('#')[0] + '?t=' + Date.now());
-        }, 900);
+// 4. 带时间戳刷新，绕过缓存，并标记跳过网络加载
+sessionStorage.setItem('SKIP_SQL_INIT', 'true');
+setTimeout(() => {
+    location.replace(location.href.split('#')[0] + '?t=' + Date.now());
+}, 900);
     } catch (err) {
         console.error('上传失败:', err);
         if (btn) { btn.disabled = false; btn.textContent = '💾 保存并上传'; }
