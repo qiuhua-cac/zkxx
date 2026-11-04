@@ -627,45 +627,6 @@ function sendToServer(key, data) {
     }).catch(e => console.warn('⚠️ SQL 同步失败，已保留本地缓存', e));
 }
 
-const originalGetItem = localStorage.getItem.bind(localStorage);
-const originalSetItem = localStorage.setItem.bind(localStorage);
-const originalRemoveItem = localStorage.removeItem.bind(localStorage);
-
-// 核心防回写锁：标记用户刚刚主动退出了
-let _justLoggedOut = false;
-
-localStorage.getItem = function(key) {
-    if (key === USER_SESSION_KEY && _justLoggedOut) return null;
-    if (key in window._SQL_CACHE) {
-        const val = window._SQL_CACHE[key];
-        if (val === null || val === 'null' || val === undefined) return null; // 拦截空数据
-        return typeof val === 'string' ? val : JSON.stringify(val);
-    }
-    try { return originalGetItem(key); }
-    catch (e) { console.warn('localStorage 读取失败', e); return null; }
-};
-
-localStorage.setItem = function(key, value) {
-    if (key === USER_SESSION_KEY && _justLoggedOut) return; // 阻止系统把刚退出的账号写回来
-    try { window._SQL_CACHE[key] = JSON.parse(value); }
-    catch (e) { window._SQL_CACHE[key] = value; }
-    if (SQL_ALLOWED_KEYS.includes(key)) {
-        sendToServer(key, window._SQL_CACHE[key]);
-    }
-    try { originalSetItem(key, value); }
-    catch (e) { console.warn('localStorage 写入失败（已忽略）', e); }
-};
-
-// 彻底修复删除操作，真正把本地数据抹掉！
-localStorage.removeItem = function(key) {
-    if (key === USER_SESSION_KEY) {
-        _justLoggedOut = true; // 上锁
-    }
-    delete window._SQL_CACHE[key];
-    try { originalRemoveItem(key); }
-    catch (e) { console.warn('localStorage 删除失败', e); }
-};
-
 async function initSQLData() {
     try {
         const resp = await fetch(API_BASE + '/api/get-all-data');
@@ -781,11 +742,8 @@ function clearUserSession() {
             delete window._SQL_CACHE[USER_SESSION_KEY];
             window._SQL_CACHE[USER_SESSION_KEY] = null;
         }
-        originalSetItem(USER_SESSION_KEY, 'null');
-        originalRemoveItem(USER_SESSION_KEY);
-    } catch (e) { 
-        console.warn('清除失败', e);
-    } 
+        window.localStorage.removeItem(USER_SESSION_KEY);
+    } catch (e) { } 
 }
 
 function saveAdminSession(admin) { window._adminSession = { username: admin.username, isAdmin: true }; }
@@ -1457,27 +1415,23 @@ async function doUserRegister() {
 async function doUserLogout() {
     if (!confirm('确定退出普通账号吗？')) return;
     currentUser = null; 
-    _justLoggedOut = true; 
     
-    // 彻底抹除内存和本地
-    delete window._SQL_CACHE[USER_SESSION_KEY];
-    window._SQL_CACHE[USER_SESSION_KEY] = null;
-    try { 
-        originalSetItem(USER_SESSION_KEY, 'null'); 
-        originalRemoveItem(USER_SESSION_KEY); 
-    } catch(e) {}
-
-    // 立即刷新
-    window.location.reload();
+    // 1. 清理内存
+    if (window._SQL_CACHE) {
+        delete window._SQL_CACHE[USER_SESSION_KEY];
+        window._SQL_CACHE[USER_SESSION_KEY] = null;
+    }
+    // 2. 暴力清理本地
+    window.localStorage.removeItem(USER_SESSION_KEY);
+    window.localStorage.setItem(USER_SESSION_KEY, "");
+    
+    // 3. 暴力刷新，斩断一切异步请求回写！
+    window.location.href = window.location.href;
 }
 function refreshLoginBtns() {
     const btn = document.getElementById('loginBtn');
     if (btn) {
-        if (currentAdmin) {
-            // 如果已登录管理员，普通账号登录框应提示“登录普通账号”
-            btn.textContent = '👤 登录普通账号';
-            btn.classList.remove('logged-in');
-        } else if (currentUser && currentUser.username) {
+        if (currentUser && currentUser.username) {
             btn.textContent = '👤 ' + currentUser.username;
             btn.classList.add('logged-in');
         } else {
@@ -1488,12 +1442,10 @@ function refreshLoginBtns() {
     const adminBtn = document.getElementById('adminBtn');
     if (adminBtn) {
         if (currentAdmin) {
-            // 已经登录管理员
             adminBtn.style.display = 'block';
             adminBtn.textContent = '🛡️ 管理员';
             adminBtn.classList.add('logged-in');
         } else {
-            // 未登录管理员（无论是否登录普通账号，都显示这个按钮供其点击）
             adminBtn.style.display = 'block';
             adminBtn.textContent = '🛡️ 登录管理员';
             adminBtn.classList.remove('logged-in');
@@ -1501,20 +1453,22 @@ function refreshLoginBtns() {
     }
 }
 async function tryRestoreUserSession() {
-    // 刷新页面时，强制清空管理员状态
     currentAdmin = null; clearAdminSession();
     
-    const s = loadUserSession();
-    // 增加严格校验：必须有账号，且不能是 'null' 等假数据
-    if (s && s.username && s.username !== 'null' && s.username !== ADMIN_USERNAME) {
-        currentUser = { username: s.username, password: s.password };
-        loadMasteredFromCloud().then(() => renderStudyList(''));
-    } else {
-        currentUser = null;
-        delete window._SQL_CACHE[USER_SESSION_KEY];
-        window._SQL_CACHE[USER_SESSION_KEY] = null;
-        try { originalRemoveItem(USER_SESSION_KEY); } catch(e){}
-    }
+    const raw = window.localStorage.getItem(USER_SESSION_KEY);
+    if (raw && raw !== 'null' && raw !== 'undefined') {
+        try {
+            const obj = JSON.parse(raw);
+            if (obj && obj.username && obj.username !== 'null' && obj.username !== ADMIN_USERNAME) {
+                currentUser = { username: obj.username, password: obj.password };
+                window._SQL_CACHE[USER_SESSION_KEY] = obj;
+                if (typeof loadMasteredFromCloud === 'function') {
+                    loadMasteredFromCloud().then(() => renderStudyList(''));
+                }
+            } else { currentUser = null; }
+        } catch(e) { currentUser = null; }
+    } else { currentUser = null; }
+    
     refreshLoginBtns();
 }
 
@@ -1921,8 +1875,6 @@ document.addEventListener('DOMContentLoaded', async function () {
     on('loginBtn', 'click', function () { 
         if (currentUser && currentUser.username) {
             doUserLogout(); 
-        } else if (currentAdmin) {
-            openLoginModal(); // 已登录管理员时，允许在这里去登录普通账号
         } else {
             openLoginModal();
         }
