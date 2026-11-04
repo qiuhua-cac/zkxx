@@ -1310,8 +1310,39 @@ function autoResizeInlineBlank(el) {
 function answerSimilarity(studentAns, correctAns, threshold = 0.75) {
     if (!studentAns && !correctAns) return 1;
     if (!studentAns || !correctAns) return 0;
-    // 核心修复：支持比例判定，不再仅限 100% 完全一致
-    return String(studentAns).trim() === String(correctAns).trim() ? 1 : 0;
+    
+    const s1 = String(studentAns).trim().replace(/\s+/g, '');
+    const s2 = String(correctAns).trim().replace(/\s+/g, '');
+    
+    if (s1 === s2) return 1; // 完全一致直接满分
+    
+    // 计算编辑距离（Levenshtein Distance）
+    const m = s1.length;
+    const n = s2.length;
+    const dp = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0));
+    for (let i = 0; i <= m; i++) dp[i][0] = i;
+    for (let j = 0; j <= n; j++) dp[0][j] = j;
+    
+    for (let i = 1; i <= m; i++) {
+        for (let j = 1; j <= n; j++) {
+            if (s1[i - 1] === s2[j - 1]) {
+                dp[i][j] = dp[i - 1][j - 1];
+            } else {
+                dp[i][j] = Math.min(
+                    dp[i - 1][j] + 1,    // 删除
+                    dp[i][j - 1] + 1,    // 插入
+                    dp[i - 1][j - 1] + 1 // 替换
+                );
+            }
+        }
+    }
+    
+    const distance = dp[m][n];
+    const maxLength = Math.max(m, n);
+    const similarity = 1 - (distance / maxLength);
+    
+    // 如果相似度大于等于阈值，返回相似度本身；否则返回 0（当作错误）
+    return similarity >= threshold ? similarity : 0;
 }
 function getQuestionScore(idx) {
     const isTest = (typeof testQuestions !== 'undefined' && testQuestions.length > 0 && typeof testAnswers !== 'undefined' && testAnswers.length > 0 && testQuestions[idx] !== undefined);
@@ -1337,18 +1368,25 @@ function getQuestionScore(idx) {
         return studentSafe === correctSafe ? 5 : 0;
     }
     
-    let currentThreshold = (cfg.threshold || 75) / 100; // 👈 默认使用全局阈值
+let currentThreshold = (cfg.threshold || 75) / 100; // 👈 默认使用全局阈值
 if (ed.threshold !== undefined && ed.threshold !== null) {
     currentThreshold = ed.threshold / 100; // 👈 有独立阈值则覆盖全局
 }
 
-    const parsed = getParsedForQuestion(rawQ); const correctParts = parsed.answers;
-    if (!Array.isArray(answer)) return 0;
-    const perBlank = 5 / correctParts.length; let total = 0;
-    for (let i = 0; i < correctParts.length; i++) { 
-        if (answerSimilarity(answer[i], correctParts[i], currentThreshold) >= currentThreshold) total += perBlank; 
+const parsed = getParsedForQuestion(rawQ); 
+const correctParts = parsed.answers;
+if (!Array.isArray(answer)) return 0;
+
+const perBlank = 5 / correctParts.length; 
+let total = 0;
+for (let i = 0; i < correctParts.length; i++) { 
+    // 调用相似度函数，函数内部会判断是否达到阈值
+    const similarity = answerSimilarity(answer[i], correctParts[i], currentThreshold);
+    if (similarity > 0) {
+        total += perBlank; 
     }
-    return total;
+}
+return total;
 }
 // ===== 之前缺失的函数，这里补齐 =====
 function isPartiallyCorrect(rawQ, idx) {
@@ -1366,10 +1404,11 @@ function isPartiallyCorrect(rawQ, idx) {
     }
 
     let ok = 0;
-    for (let i = 0; i < parsed.answers.length; i++) {
-        if (answerSimilarity(answers[i], parsed.answers[i], currentThreshold) >= currentThreshold) ok++;
-    }
-    return ok > 0 && ok < parsed.answers.length;
+for (let i = 0; i < parsed.answers.length; i++) {
+    // 只要相似度函数返回 >0，说明达到了阈值
+    if (answerSimilarity(answers[i], parsed.answers[i], currentThreshold) > 0) ok++;
+}
+return ok > 0 && ok < parsed.answers.length;
 }
 function closeTestMode() {
     if (testTimerInterval) { clearInterval(testTimerInterval); testTimerInterval = null; }
@@ -1944,7 +1983,7 @@ if (submitted) {
     }
     const explSource = (ed && ed.customExplanation) || rawQ.e;
     let isPartial = false;
-        if (!isChoice && !isCorrect) {
+if (!isChoice && !isCorrect) {
     let ok = 0; const parsed = getParsedForQuestion(rawQ); const ans = testAnswers[idx];
     // 读取全局/独立阈值
     let currentThreshold = (cfg.threshold || 75) / 100;
@@ -1952,7 +1991,8 @@ if (submitted) {
     
     if (Array.isArray(ans)) { 
         for (let i = 0; i < parsed.answers.length; i++) 
-            if (answerSimilarity(ans[i], parsed.answers[i], currentThreshold) >= currentThreshold) ok++; 
+            // 这里改成 > 0 判定
+            if (answerSimilarity(ans[i], parsed.answers[i], currentThreshold) > 0) ok++; 
     }
     isPartial = ok > 0 && ok < parsed.answers.length;
 }
