@@ -1433,16 +1433,96 @@ function getParsedForQuestion(rawQ) {
     return { displayText: rawQ.q, answers: rawAnswers, orderRules: new Array(rawAnswers.length).fill('order') };
 }
 
-function buildFillQuestionHTMLFromParsed(parsed, answerData, submitted) {
-    let cleanText = parsed.displayText.replace(/<\/答案>.*?<答案\\>/g, '⬜').trim();
-    let html = escapeHTML(cleanText);
+function buildFillQuestionHTMLFromParsed(parsed, answerData, submitted, rawQ) {
+    let html = escapeHTML(parsed.displayText);
+    const answers = parsed.answers;
+    const rules = parsed.orderRules || [];
     let blankIndex = 0;
-    function makeInput(i) {
-        const val = answerData && answerData[i] ? escapeHTML(answerData[i]) : '';
-        return `<textarea class="inline-blank" data-blank="${i}" rows="1" ${submitted ? 'disabled' : ''}>${val}</textarea>`;
+    let matchedCorrectIndex = [];
+    
+    if (submitted && rawQ && Array.isArray(answerData)) {
+        const cfg = loadPracticeCfg();
+        const editData = loadPracticeEdit();
+        const _ed = editData[rawQ.q] || {};
+        let threshold = _ed.threshold !== undefined && _ed.threshold !== null ? _ed.threshold / 100 : (cfg.threshold || 75) / 100;
+        const orderSetting = _ed.orderSetting || 'all';
+
+        matchedCorrectIndex = new Array(answerData.length).fill(-1);
+
+        if (orderSetting === 'none') {
+            for (let i = 0; i < answers.length; i++) {
+                const studentAns = (answerData[i] || '').trim();
+                if (!studentAns) continue;
+                if (answerSimilarity(studentAns, answers[i] || '') >= threshold) {
+                    matchedCorrectIndex[i] = i;
+                }
+            }
+        } else if (orderSetting === 'partial') {
+            const groups = [];
+            let cur = null;
+            for (let i = 0; i < answers.length; i++) {
+                const r = rules[i] || 'order';
+                if (!cur || cur.rule !== r) { cur = { rule: r, indices: [i] }; groups.push(cur); }
+                else { cur.indices.push(i); }
+            }
+            let cursor = 0;
+            for (const g of groups) {
+                const n = g.indices.length;
+                if (g.rule === 'fixed') {
+                    for (let k = 0; k < n; k++) {
+                        const ci = g.indices[k];
+                        const si = cursor + k;
+                        const studentAns = (answerData[si] || '').trim();
+                        if (!studentAns) continue;
+                        if (answerSimilarity(studentAns, answers[ci] || '') >= threshold) matchedCorrectIndex[si] = ci;
+                    }
+                } else {
+                    const used = new Array(n).fill(false);
+                    for (let k = 0; k < n; k++) {
+                        const si = cursor + k;
+                        const studentAns = (answerData[si] || '').trim();
+                        if (!studentAns) continue;
+                        if (!used[k] && answerSimilarity(studentAns, answers[g.indices[k]] || '') >= threshold) {
+                            matchedCorrectIndex[si] = g.indices[k]; used[k] = true; continue;
+                        }
+                        for (let j = 0; j < n; j++) {
+                            if (!used[j] && answerSimilarity(studentAns, answers[g.indices[j]] || '') >= threshold) {
+                                matchedCorrectIndex[si] = g.indices[j]; used[j] = true; break;
+                            }
+                        }
+                    }
+                }
+                cursor += n;
+            }
+        } else {
+            // 🔥 全部允许乱序：只要这个答案在池子里，就给它打钩，不管在哪个框
+            const usedCorrect = new Array(answers.length).fill(false);
+            for (let i = 0; i < answerData.length; i++) {
+                const studentAns = (answerData[i] || '').trim();
+                if (!studentAns) continue;
+                if (i < answers.length && !usedCorrect[i] && answerSimilarity(studentAns, answers[i] || '') >= threshold) {
+                    matchedCorrectIndex[i] = i; usedCorrect[i] = true; continue;
+                }
+                for (let j = 0; j < answers.length; j++) {
+                    if (!usedCorrect[j] && answerSimilarity(studentAns, answers[j] || '') >= threshold) {
+                        matchedCorrectIndex[i] = j; usedCorrect[j] = true; break;
+                    }
+                }
+            }
+        }
     }
-    html = html.replace(/⬜/g, () => { if (blankIndex < parsed.answers.length) return makeInput(blankIndex++); return '⬜'; });
-    while (blankIndex < parsed.answers.length) { html += ' ' + makeInput(blankIndex++); }
+
+    function makeInput(idx) {
+        const val = answerData && answerData[idx] ? escapeHTML(answerData[idx]) : '';
+        let markHTML = '';
+        if (submitted && matchedCorrectIndex[idx] >= 0) markHTML = ' <span class="blank-mark ok">✔</span>';
+        else if (submitted) markHTML = ' <span class="blank-mark no">✘</span>';
+        return `<textarea class="inline-blank" data-blank="${idx}" rows="1" ${submitted ? 'disabled' : ''}>${val}</textarea>${markHTML}`;
+    }
+
+    html = html.replace(/⬜/g, () => { if (blankIndex < answers.length) return makeInput(blankIndex++); return '⬜'; });
+    html = html.replace(/（\s*）|\(\s*\)|_{2,}|＿{2,}/g, () => { if (blankIndex < answers.length) return makeInput(blankIndex++); return '（）'; });
+    while (blankIndex < answers.length) { html += ' ' + makeInput(blankIndex++); }
     return html;
 }
 function autoResizeInlineBlank(el) {
@@ -1488,6 +1568,85 @@ function answerSimilarity(studentAns, correctAns, threshold = 0.75) {
     // 如果相似度大于等于阈值，返回相似度本身；否则返回 0（当作错误）
     return similarity >= threshold ? similarity : 0;
 }
+// 详细判定每个填空的状态，用于 UI 显示和对错判定（池子匹配版）
+function evaluateFillQuestion(rawQ, answer) {
+    const cfg = loadPracticeCfg(); const editData = loadPracticeEdit(); const ed = editData[rawQ.q] || {};
+    let threshold = ed.threshold !== undefined && ed.threshold !== null ? ed.threshold / 100 : (cfg.threshold || 75) / 100;
+    const orderSetting = ed.orderSetting || 'all';
+
+    const parsed = getParsedForQuestion(rawQ);
+    const correctParts = parsed.answers;
+    const rules = parsed.orderRules || [];
+    const studentAns = Array.isArray(answer) ? answer : [];
+
+    const results = correctParts.map((corr, i) => {
+        const stu = studentAns[i] || '';
+        return { correct: corr, student: stu, status: 'wrong', score: 0, matchedIndex: -1 };
+    });
+
+    if (orderSetting === 'all') {
+        const usedCorrect = new Array(correctParts.length).fill(false);
+        for (let i = 0; i < studentAns.length; i++) {
+            const stu = (studentAns[i] || '').trim();
+            if (!stu) continue;
+            if (i < correctParts.length && !usedCorrect[i] && answerSimilarity(stu, correctParts[i] || '') >= threshold) {
+                results[i].status = 'correct'; results[i].score = 5 / correctParts.length; results[i].matchedIndex = i; usedCorrect[i] = true; continue;
+            }
+            for (let j = 0; j < correctParts.length; j++) {
+                if (!usedCorrect[j] && answerSimilarity(stu, correctParts[j] || '') >= threshold) {
+                    results[i].status = 'correct'; results[i].score = 5 / correctParts.length; results[i].matchedIndex = j; usedCorrect[j] = true; break;
+                }
+            }
+        }
+    } else if (orderSetting === 'none') {
+        for (let i = 0; i < correctParts.length; i++) {
+            if (answerSimilarity((studentAns[i] || '').trim(), correctParts[i] || '') >= threshold) {
+                results[i].status = 'correct'; results[i].score = 5 / correctParts.length; results[i].matchedIndex = i;
+            }
+        }
+    } else {
+        const groups = []; let cur = null;
+        for (let i = 0; i < correctParts.length; i++) {
+            const r = rules[i] || 'order';
+            if (!cur || cur.rule !== r) { cur = { rule: r, indices: [i] }; groups.push(cur); }
+            else { cur.indices.push(i); }
+        }
+        let cursor = 0;
+        for (const g of groups) {
+            const n = g.indices.length;
+            if (g.rule === 'fixed') {
+                for (let k = 0; k < n; k++) {
+                    const ci = g.indices[k]; const si = cursor + k;
+                    if (answerSimilarity((studentAns[si] || '').trim(), correctParts[ci] || '') >= threshold) {
+                        results[si].status = 'correct'; results[si].score = 5 / correctParts.length; results[si].matchedIndex = ci;
+                    }
+                }
+            } else {
+                const used = new Array(n).fill(false);
+                for (let k = 0; k < n; k++) {
+                    const si = cursor + k; const stu = (studentAns[si] || '').trim();
+                    if (!stu) continue;
+                    if (!used[k] && answerSimilarity(stu, correctParts[g.indices[k]] || '') >= threshold) {
+                        results[si].status = 'correct'; results[si].score = 5 / correctParts.length; results[si].matchedIndex = g.indices[k]; used[k] = true; continue;
+                    }
+                    for (let j = 0; j < n; j++) {
+                        if (!used[j] && answerSimilarity(stu, correctParts[g.indices[j]] || '') >= threshold) {
+                            results[si].status = 'correct'; results[si].score = 5 / correctParts.length; results[si].matchedIndex = g.indices[j]; used[j] = true; break;
+                        }
+                    }
+                }
+            }
+            cursor += n;
+        }
+    }
+
+    let totalScore = results.reduce((sum, r) => sum + r.score, 0);
+    let status = 'wrong';
+    if (totalScore >= 5 - 0.001) status = 'correct';
+    else if (totalScore > 0) status = 'partial';
+    return { results, totalScore, status };
+}
+
 function getQuestionScore(idx) {
     const isTest = (typeof testQuestions !== 'undefined' && testQuestions.length > 0 && typeof testAnswers !== 'undefined' && testAnswers.length > 0 && testQuestions[idx] !== undefined);
     const sourceQuestions = isTest ? testQuestions : practiceQuestions;
@@ -1512,47 +1671,18 @@ function getQuestionScore(idx) {
         return studentSafe === correctSafe ? 5 : 0;
     }
     
-let currentThreshold = (cfg.threshold || 75) / 100; // 👈 默认使用全局阈值
-if (ed.threshold !== undefined && ed.threshold !== null) {
-    currentThreshold = ed.threshold / 100; // 👈 有独立阈值则覆盖全局
+    // 填空使用新逻辑
+    const evalResult = evaluateFillQuestion(rawQ, answer);
+    return evalResult.totalScore;
 }
 
-const parsed = getParsedForQuestion(rawQ); 
-const correctParts = parsed.answers;
-if (!Array.isArray(answer)) return 0;
-
-const perBlank = 5 / correctParts.length; 
-let total = 0;
-for (let i = 0; i < correctParts.length; i++) { 
-    // 调用相似度函数，函数内部会判断是否达到阈值
-    const similarity = answerSimilarity(answer[i], correctParts[i], currentThreshold);
-    if (similarity > 0) {
-        total += perBlank; 
-    }
-}
-return total;
-}
-// ===== 之前缺失的函数，这里补齐 =====
+// 同步修改 isPartiallyCorrect 辅助函数（只保留一份，避免同名覆盖）
 function isPartiallyCorrect(rawQ, idx) {
     if (!rawQ) return false;
     if (rawQ.isChoice === true) return false;
-    const parsed = getParsedForQuestion(rawQ);
     const answers = (typeof practiceAnswers !== 'undefined' && practiceAnswers[idx]) ? practiceAnswers[idx] : (typeof testAnswers !== 'undefined' ? testAnswers[idx] : null);
-    if (!Array.isArray(answers)) return false;
-    
-    // 核心修复：读取全局阈值或独立阈值
-    const cfg = loadPracticeCfg(); const editData = loadPracticeEdit(); const ed = editData[rawQ.q] || {};
-    let currentThreshold = (cfg.threshold || 75) / 100;
-    if (ed.threshold !== undefined && ed.threshold !== null) {
-        currentThreshold = ed.threshold / 100;
-    }
-
-    let ok = 0;
-for (let i = 0; i < parsed.answers.length; i++) {
-    // 只要相似度函数返回 >0，说明达到了阈值
-    if (answerSimilarity(answers[i], parsed.answers[i], currentThreshold) > 0) ok++;
-}
-return ok > 0 && ok < parsed.answers.length;
+    const evalResult = evaluateFillQuestion(rawQ, answers);
+    return evalResult.status === 'partial';
 }
 function closeTestMode() {
     if (testTimerInterval) { clearInterval(testTimerInterval); testTimerInterval = null; }
@@ -1594,17 +1724,43 @@ function renderPracticeQuestion() {
         typeLabel = '📝 填空题';
         const parsed = getParsedForQuestion(rawQ);
         answerHTML = `<div class="practice-answer-area" id="practiceAnswerArea">`;
-        answerHTML += buildFillQuestionHTMLFromParsed(parsed, answerData, submitted);
+        answerHTML += buildFillQuestionHTMLFromParsed(parsed, answerData, submitted, rawQ);
         answerHTML += `</div>`;
     }
     let feedbackHTML = '';
     if (submitted) {
-        const score = getQuestionScore(idx); const isCorrect = score >= 5;
+        const score = getQuestionScore(idx); 
+        const isCorrect = score >= 5;
+        let isPart = false;
+        if (!isChoice && !isCorrect) isPart = isPartiallyCorrect(rawQ, idx);
+        
         let correctDisplay = isChoice ? (ed && ed.correct ? ed.correct : rawQ.a) : getParsedForQuestion(rawQ).answers.map(p => `<span class="answer-highlight">${escapeHTML(p)}</span>`).join('<span class="answer-sep">｜</span>');
         const explSource = (ed && ed.customExplanation) || rawQ.e;
-        feedbackHTML = `<div class="practice-feedback ${isCorrect ? 'ok' : 'no'}"><b>${isCorrect ? '✅ 回答正确' : '❌ 回答错误'}</b>　得分：${score.toFixed(1)}/5<br><b>标准答案：</b>${correctDisplay}<br>${explSource ? '<b>解析：</b>' + escapeHTML(explSource) : ''}</div>`;
+        
+        let title = isCorrect ? '✅ 回答正确' : (isPart ? '⚠️ 部分答对' : '❌ 回答错误');
+        let cls = isCorrect ? 'ok' : (isPart ? 'part' : 'no');
+        
+        let detailHTML = '';
+        if (!isChoice) {
+            // 填空题，渲染详细的逐空状态
+            const evalRes = evaluateFillQuestion(rawQ, answerData);
+            const correctParts = getParsedForQuestion(rawQ).answers;
+            detailHTML = `<div style="margin-top:6px;font-size:12px;color:#64748b;">`;
+            evalRes.results.forEach((r, i) => {
+                const icon = r.status === 'correct' ? '<span class="blank-mark ok">✔</span>' : '<span class="blank-mark no">✘</span>';
+                const stuText = r.student ? escapeHTML(r.student) : '<span style="color:#94a3b8;">未填</span>';
+                const corrText = escapeHTML(r.correct);
+                // 如果状态是 correct 且 matchedIndex 不是自己，说明是乱序匹配对的，不要报错提示
+                const shouldShowCorrect = r.status !== 'correct';
+                detailHTML += `<div style="display:flex;gap:8px;align-items:center;margin-bottom:2px;">${icon} <span style="color:#94a3b8;">第${i+1}空：</span> ${stuText} ${shouldShowCorrect ? `<span style="color:#ef4444;font-size:11px;">(应为: ${corrText})</span>` : ''}</div>`;
+            });
+            detailHTML += `</div>`;
+        }
+        
+        feedbackHTML = `<div class="practice-feedback ${cls}"><b>${title}</b>　得分：${score.toFixed(1)}/5<br><b>标准答案：</b>${correctDisplay}<br>${detailHTML}${explSource ? '<b>解析：</b>' + escapeHTML(explSource) : ''}</div>`;
     }
 
+    // 填空勾叉与颜色已在 buildFillQuestionHTMLFromParsed 内统一处理，此处不再二次覆盖
     body.innerHTML = `<div class="practice-question-card"><div class="pq-type">${typeLabel}</div><div class="pq-text">${isChoice ? escapeHTML(rawQ.q) : answerHTML}</div>${isChoice ? answerHTML : ''}${feedbackHTML}</div>`;
 
     if (!isChoice && !submitted) {
@@ -1979,7 +2135,7 @@ function showPracticePreview(idx) {
     } else {
         typeLabel = '📝 填空题';
         const parsed = getParsedForQuestion(rawQ);
-        answerHTML = `<div class="practice-answer-area">${buildFillQuestionHTMLFromParsed(parsed, null, false)}</div>`;
+        answerHTML = `<div class="practice-answer-area">${buildFillQuestionHTMLFromParsed(parsed, null, false, rawQ)}</div>`;
     }
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay active'; overlay.style.zIndex = 99999;
@@ -2007,13 +2163,22 @@ function showPracticePreview(idx) {
 
 function parseQuestionWithAnswers(text, orderSetting) {
     orderSetting = orderSetting || 'all';
-    const answers = []; const orderRules = []; let currentRule = (orderSetting === 'none') ? 'fixed' : 'order';
+    const answers = [];
     let displayText = ''; let i = 0; const len = text.length;
+    
+    let currentBlockType = null; 
+    let blockIdx = -1;
+    const groupRules = []; 
+    const blockRules = {}; 
+
+    const hasExplicitBlocks = /<\/固>|<固\\>|<\/乱序>|<乱序\\>/.test(text);
+
     while (i < len) {
-        if (text.startsWith('</固>', i)) { currentRule = 'fixed'; i += '</固>'.length; continue; }
-        if (text.startsWith('<固\\>', i) || text.startsWith('<固>', i)) { currentRule = 'order'; i += 4; continue; }
-        if (text.startsWith('</乱序>', i)) { currentRule = 'order'; i += '</乱序>'.length; continue; }
-        if (text.startsWith('<乱序\\>', i) || text.startsWith('<乱序>', i)) { currentRule = 'order'; i += 5; continue; }
+        if (text.startsWith('</固>', i)) { currentBlockType = 'fixed'; blockIdx++; blockRules[blockIdx] = 'fixed'; i += '</固>'.length; continue; }
+        if (text.startsWith('<固\\>', i) || text.startsWith('<固>', i)) { currentBlockType = null; i += (text.startsWith('<固\\>', i) ? 4 : 3); continue; }
+        if (text.startsWith('</乱序>', i)) { currentBlockType = 'order'; blockIdx++; blockRules[blockIdx] = 'order'; i += '</乱序>'.length; continue; }
+        if (text.startsWith('<乱序\\>', i) || text.startsWith('<乱序>', i)) { currentBlockType = null; i += (text.startsWith('<乱序\\>', i) ? 5 : 4); continue; }
+        
         if (text.startsWith('</答案>', i) || text.startsWith('<答案>', i) || text.startsWith('【答案】', i)) {
             const startTag = text.startsWith('</答案>', i) ? '</答案>' : (text.startsWith('<答案>', i) ? '<答案>' : '【答案】');
             const afterStart = i + startTag.length;
@@ -2021,21 +2186,39 @@ function parseQuestionWithAnswers(text, orderSetting) {
             const candidates = ['<答案\\>', '<答案>', '</答案>', '【/答案】'];
             for (const c of candidates) { const p = text.indexOf(c, afterStart); if (p !== -1 && (endPos === -1 || p < endPos)) { endPos = p; endTagLen = c.length; } }
             if (endPos === -1) { displayText += text[i]; i++; continue; }
-            answers.push(text.slice(afterStart, endPos).trim()); orderRules.push(currentRule); displayText += '⬜';
+            
+            answers.push(text.slice(afterStart, endPos).trim()); 
+            
+            if (!hasExplicitBlocks) {
+                groupRules.push(0);
+                blockRules[0] = (orderSetting === 'all') ? 'order' : 'fixed'; // 如果选全局乱序，这里给 order
+            } else {
+                if (currentBlockType === null) {
+                    groupRules.push(-1); 
+                } else {
+                    groupRules.push(blockIdx);
+                }
+            }
+            displayText += '⬜';
             i = endPos + endTagLen; continue;
         }
         displayText += text[i]; i++;
     }
+    
     if (answers.length === 0) {
         const rawAnswers = (text || '').split(/[｜|‖]/).map(s => s.trim()).filter(Boolean);
-        if (rawAnswers.length > 1) {
+        if (rawAnswers.length > 0) {
             let q = text; let ai = 0;
             q = q.replace(/（\s*）|\(\s*\)|_{2,}|＿{2,}/g, () => { if (ai < rawAnswers.length) { answers.push(rawAnswers[ai++]); return '⬜'; } return '（）'; });
             while (ai < rawAnswers.length) { answers.push(rawAnswers[ai++]); q += ' ⬜'; }
             displayText = q;
-        } else if (rawAnswers.length === 1) { displayText = text + ' ⬜'; answers.push(rawAnswers[0]); }
+            const fallbackType = (orderSetting === 'all') ? 'order' : 'fixed';
+            for(let j=0; j<answers.length; j++){ groupRules.push(0); }
+            blockRules[0] = fallbackType;
+        }
     }
-    return { displayText, answers, orderRules, originalText: text };
+    
+    return { displayText, answers, groupRules, blockRules, originalText: text };
 }
 
 // ==================== 测试模式 ====================
@@ -2103,12 +2286,15 @@ function renderTestQuestion() {
     } else {
         typeLabel = '📝 填空题';
         const parsed = getParsedForQuestion(rawQ);
-        answerHTML = `<div class="practice-answer-area">${buildFillQuestionHTMLFromParsed(parsed, answerData, submitted)}</div>`;
+        answerHTML = `<div class="practice-answer-area">${buildFillQuestionHTMLFromParsed(parsed, answerData, submitted, rawQ)}</div>`;
     }
 let feedbackHTML = '';
 if (submitted) {
     const score = getQuestionScore(idx);
     const isCorrect = score >= 5;
+    let isPart = false;
+    if (!isChoice && !isCorrect) isPart = isPartiallyCorrect(rawQ, idx);
+    
     let correctDisplay = '';
     if (isChoice) {
         let displayOpts = ed && ed.options ? ed.options : (cfg.singleOptions[rawQ.q] || cfg.multiOptions[rawQ.q] || ['A. 选项A', 'B. 选项B', 'C. 选项C', 'D. 选项D']);
@@ -2126,25 +2312,27 @@ if (submitted) {
         correctDisplay = getParsedForQuestion(rawQ).answers.map(p => `<span class="answer-highlight">${escapeHTML(p)}</span>`).join('<span class="answer-sep">｜</span>');
     }
     const explSource = (ed && ed.customExplanation) || rawQ.e;
-    let isPartial = false;
-if (!isChoice && !isCorrect) {
-    let ok = 0; const parsed = getParsedForQuestion(rawQ); const ans = testAnswers[idx];
-    // 读取全局/独立阈值
-    let currentThreshold = (cfg.threshold || 75) / 100;
-    if (ed.threshold !== undefined && ed.threshold !== null) currentThreshold = ed.threshold / 100;
     
-    if (Array.isArray(ans)) { 
-        for (let i = 0; i < parsed.answers.length; i++) 
-            // 这里改成 > 0 判定
-            if (answerSimilarity(ans[i], parsed.answers[i], currentThreshold) > 0) ok++; 
+    let cls = isCorrect ? 'ok' : (isPart ? 'part' : 'no');
+    let title = isCorrect ? '✅ 回答正确' : (isPart ? '⚠️ 部分答对' : '❌ 回答错误');
+    
+    let detailHTML = '';
+    if (!isChoice) {
+        const evalRes = evaluateFillQuestion(rawQ, answerData);
+        detailHTML = `<div style="margin-top:6px;font-size:12px;color:#64748b;">`;
+        evalRes.results.forEach((r, i) => {
+            const icon = r.status === 'correct' ? '<span class="blank-mark ok">✔</span>' : '<span class="blank-mark no">✘</span>';
+            const stuText = r.student ? escapeHTML(r.student) : '<span style="color:#94a3b8;">未填</span>';
+            const corrText = escapeHTML(r.correct);
+            detailHTML += `<div style="display:flex;gap:8px;align-items:center;margin-bottom:2px;">${icon} <span style="color:#94a3b8;">第${i+1}空：</span> ${stuText} ${r.status !== 'correct' ? `<span style="color:#ef4444;font-size:11px;">(应为: ${corrText})</span>` : ''}</div>`;
+        });
+        detailHTML += `</div>`;
     }
-    isPartial = ok > 0 && ok < parsed.answers.length;
+    
+    feedbackHTML = `<div class="practice-feedback ${cls}"><b>${title}</b>　得分：${score.toFixed(1)}/5<br><b>标准答案：</b>${correctDisplay}<br>${detailHTML}${explSource ? '<b>解析：</b>' + escapeHTML(explSource) : ''}</div>`;
 }
-        const cls = isCorrect ? 'ok' : (isPartial ? 'part' : 'no');
-        const title = isCorrect ? '✅ 回答正确' : (isPartial ? '⚠️ 部分答对' : '❌ 回答错误');
-        feedbackHTML = `<div class="practice-feedback ${cls}"><b>${title}</b>　得分：${score.toFixed(1)}/5<br><b>标准答案：</b>${correctDisplay}<br>${explSource ? '<b>解析：</b>' + escapeHTML(explSource) : ''}</div>`;
-    }
-    body.innerHTML = `<div class="practice-question-card"><div class="pq-type">${typeLabel}</div><div class="pq-text">${isChoice ? escapeHTML(stripAnswerMarkers(q.q)) : answerHTML}</div>${isChoice ? answerHTML : ''}${feedbackHTML}</div>`;
+
+body.innerHTML = `<div class="practice-question-card"><div class="pq-type">${typeLabel}</div><div class="pq-text">${isChoice ? escapeHTML(stripAnswerMarkers(q.q)) : answerHTML}</div>${isChoice ? answerHTML : ''}${feedbackHTML}</div>`;
 
     if (!isChoice && !submitted) {
         body.querySelectorAll('.inline-blank').forEach(inp => {
@@ -2769,76 +2957,64 @@ setTimeout(() => {
     let _adminPwdDraft = [];
 
     function renderAdminAccountList() {
-    const box = document.getElementById('adminAccountList');
-    if (!box) return;
-    box.innerHTML = '';
-    if (!_adminAccDraft.length) {
-        box.innerHTML = '<div style="font-size:12px;color:#94a3b8;padding:6px 0;">暂无账号</div>';
-        return;
-    }
-    _adminAccDraft.forEach((acc, i) => {
-        const row = document.createElement('div');
-        row.style.cssText = 'display:flex;align-items:center;gap:8px;';
-        row.innerHTML = `<input type="text" value="${escapeHTML(acc)}" data-acc-idx="${i}" style="flex:1;padding:7px 10px;font-size:12px;border:1.5px solid #c8d9ec;border-radius:8px;outline:none;background:#f9fcff;"><button class="btn btn-sm btn-danger" data-acc-del="${i}" style="padding:5px 10px;">删除</button>`;
-        box.appendChild(row);
-    });
-    box.querySelectorAll('[data-acc-idx]').forEach(inp => {
-        inp.addEventListener('input', () => {
-            const i = parseInt(inp.dataset.accIdx);
-            if (_adminAccDraft[i] !== undefined) _adminAccDraft[i] = inp.value;
+        const box = document.getElementById('adminAccountList');
+        if (!box) return;
+        box.innerHTML = '';
+        if (!_adminAccDraft.length) {
+            box.innerHTML = '<div style="font-size:12px;color:#94a3b8;padding:6px 0;">暂无账号</div>';
+            return;
+        }
+        _adminAccDraft.forEach((acc, i) => {
+            const row = document.createElement('div');
+            row.style.cssText = 'display:flex;align-items:center;gap:8px;';
+            row.innerHTML = `<input type="text" value="${escapeHTML(acc)}" data-acc-idx="${i}" style="flex:1;padding:7px 10px;font-size:12px;border:1.5px solid #c8d9ec;border-radius:8px;outline:none;background:#f9fcff;"><button class="btn btn-sm btn-danger" data-acc-del="${i}" style="padding:5px 10px;">删除</button>`;
+            box.appendChild(row);
         });
-    });
-    box.querySelectorAll('[data-acc-del]').forEach(btn => {
-        btn.addEventListener('click', async () => {
-            const i = parseInt(btn.dataset.accDel);
-            if (_adminAccDraft.length <= 1) { showToast('至少保留一个账号'); return; }
-            const code = await showCustomPrompt('确认删除该账号，请输入确认代码');
-            if (code !== 'qiuhua') { if (code !== null) showToast('❌ 密码错误，删除已取消'); return; }
-            _adminAccDraft.splice(i, 1);
-            saveAdminAccounts(_adminAccDraft);
-            renderAdminAccountList();
-            pushAdminAuthToSQL().then(ok => {
-                showToast(ok ? '✅ 已删除该账号并同步 SQL' : '✅ 已删除该账号（SQL 同步失败，已存本地）');
+        box.querySelectorAll('[data-acc-idx]').forEach(inp => {
+            inp.addEventListener('input', () => {
+                const i = parseInt(inp.dataset.accIdx);
+                if (_adminAccDraft[i] !== undefined) _adminAccDraft[i] = inp.value;
             });
         });
-    });
-}
+        box.querySelectorAll('[data-acc-del]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const i = parseInt(btn.dataset.accDel);
+                if (_adminAccDraft.length <= 1) { showToast('至少保留一个账号'); return; }
+                _adminAccDraft.splice(i, 1);
+                renderAdminAccountList();
+            });
+        });
+    }
 
     function renderAdminPasswordList() {
-    const box = document.getElementById('adminPasswordList');
-    if (!box) return;
-    box.innerHTML = '';
-    if (!_adminPwdDraft.length) {
-        box.innerHTML = '<div style="font-size:12px;color:#94a3b8;padding:6px 0;">暂无密码</div>';
-        return;
-    }
-    _adminPwdDraft.forEach((pwd, i) => {
-        const row = document.createElement('div');
-        row.style.cssText = 'display:flex;align-items:center;gap:8px;';
-        row.innerHTML = `<input type="text" value="${escapeHTML(pwd)}" data-pwd-idx="${i}" style="flex:1;padding:7px 10px;font-size:12px;border:1.5px solid #c8d9ec;border-radius:8px;outline:none;background:#f9fcff;"><button class="btn btn-sm btn-danger" data-pwd-del="${i}" style="padding:5px 10px;">删除</button>`;
-        box.appendChild(row);
-    });
-    box.querySelectorAll('[data-pwd-idx]').forEach(inp => {
-        inp.addEventListener('input', () => {
-            const i = parseInt(inp.dataset.pwdIdx);
-            if (_adminPwdDraft[i] !== undefined) _adminPwdDraft[i] = inp.value;
+        const box = document.getElementById('adminPasswordList');
+        if (!box) return;
+        box.innerHTML = '';
+        if (!_adminPwdDraft.length) {
+            box.innerHTML = '<div style="font-size:12px;color:#94a3b8;padding:6px 0;">暂无密码</div>';
+            return;
+        }
+        _adminPwdDraft.forEach((pwd, i) => {
+            const row = document.createElement('div');
+            row.style.cssText = 'display:flex;align-items:center;gap:8px;';
+            row.innerHTML = `<input type="text" value="${escapeHTML(pwd)}" data-pwd-idx="${i}" style="flex:1;padding:7px 10px;font-size:12px;border:1.5px solid #c8d9ec;border-radius:8px;outline:none;background:#f9fcff;"><button class="btn btn-sm btn-danger" data-pwd-del="${i}" style="padding:5px 10px;">删除</button>`;
+            box.appendChild(row);
         });
-    });
-    box.querySelectorAll('[data-pwd-del]').forEach(btn => {
-        btn.addEventListener('click', async () => {
-            const i = parseInt(btn.dataset.pwdDel);
-            if (_adminPwdDraft.length <= 1) { showToast('至少保留一个密码'); return; }
-            const code = await showCustomPrompt('确认删除该密码，请输入确认代码');
-            if (code !== 'qiuhua') { if (code !== null) showToast('❌ 密码错误，删除已取消'); return; }
-            _adminPwdDraft.splice(i, 1);
-            saveAdminPasswords(_adminPwdDraft);
-            renderAdminPasswordList();
-            pushAdminAuthToSQL().then(ok => {
-                showToast(ok ? '✅ 已删除该密码并同步 SQL' : '✅ 已删除该密码（SQL 同步失败，已存本地）');
+        box.querySelectorAll('[data-pwd-idx]').forEach(inp => {
+            inp.addEventListener('input', () => {
+                const i = parseInt(inp.dataset.pwdIdx);
+                if (_adminPwdDraft[i] !== undefined) _adminPwdDraft[i] = inp.value;
             });
         });
-    });
-}
+        box.querySelectorAll('[data-pwd-del]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const i = parseInt(btn.dataset.pwdDel);
+                if (_adminPwdDraft.length <= 1) { showToast('至少保留一个密码'); return; }
+                _adminPwdDraft.splice(i, 1);
+                renderAdminPasswordList();
+            });
+        });
+    }
 
     on('adminAccountBtn', 'click', function () {
         _adminAccDraft = loadAdminAccounts().slice();
@@ -2849,15 +3025,11 @@ setTimeout(() => {
     });
     on('adminAccountClose', 'click', function () { document.getElementById('adminAccountModal').classList.remove('active'); });
     on('adminAccountCancel', 'click', function () { document.getElementById('adminAccountModal').classList.remove('active'); });
-    on('adminAddAccountBtn', 'click', async function () {
-        const code = await showCustomPrompt('新增账号需输入确认代码');
-        if (code !== 'qiuhua') { if (code !== null) showToast('❌ 密码错误，新增已取消'); return; }
+    on('adminAddAccountBtn', 'click', function () {
         _adminAccDraft.push('');
         renderAdminAccountList();
     });
-    on('adminAddPasswordBtn', 'click', async function () {
-        const code = await showCustomPrompt('新增密码需输入确认代码');
-        if (code !== 'qiuhua') { if (code !== null) showToast('❌ 密码错误，新增已取消'); return; }
+    on('adminAddPasswordBtn', 'click', function () {
         _adminPwdDraft.push('');
         renderAdminPasswordList();
     });
