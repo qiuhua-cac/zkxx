@@ -1722,7 +1722,8 @@ function renderPracticeQuestion() {
     const idx = practiceCurrentIndex;
     const submitted = practiceSubmitted[idx];
     const answerData = practiceAnswers[idx];
-    const isChoice = rawQ.isChoice === true;
+    // 🔥 修复：统一使用 isQuestionChoice 判断，读取用户在练习编辑里的设置
+    const isChoice = isQuestionChoice(rawQ);
     const cfg = loadPracticeCfg(); const editData = loadPracticeEdit(); const ed = editData[rawQ.q];
 
     let answerHTML = ''; let typeLabel = '';
@@ -1730,7 +1731,8 @@ function renderPracticeQuestion() {
         let opts = [], correctAnswer = '';
         if (ed && ed.options) { opts = ed.options; correctAnswer = ed.correct || ''; }
         else { opts = cfg.singleOptions[rawQ.q] || cfg.multiOptions[rawQ.q] || ['A. 选项A', 'B. 选项B', 'C. 选项C', 'D. 选项D']; correctAnswer = cfg.singleCorrect[rawQ.q] || cfg.multiCorrect[rawQ.q] || 'A'; }
-        const isMulti = (correctAnswer || '').length > 1;
+        correctAnswer = String(correctAnswer).replace(/\s+/g, '').toUpperCase();
+        const isMulti = correctAnswer.length > 1;
         typeLabel = isMulti ? '☑️ 多选题' : '🔘 单选题';
         const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
         answerHTML = `<div class="practice-options" id="practiceOptions">`;
@@ -1738,7 +1740,7 @@ function renderPracticeQuestion() {
             const letter = letters[i]; const selected = answerData && answerData.includes(letter);
             let cls = 'practice-option' + (selected ? ' selected' : '');
             if (submitted) { if (correctAnswer.includes(letter)) cls += ' correct'; else if (selected) cls += ' wrong'; }
-            answerHTML += `<div class="${cls}" data-opt="${letter}"><div class="opt-label">${letter}</div><div class="opt-text">${escapeHTML(opt.replace(/^[A-Z]\.\s*/, ''))}</div></div>`;
+            answerHTML += `<div class="${cls}" data-opt="${letter}"><div class="opt-label">${letter}</div><div class="opt-text">${escapeHTML(opt.replace(/^[A-Z][\.．]\s*/, ''))}</div></div>`;
         });
         answerHTML += `</div>`;
     } else {
@@ -1755,7 +1757,21 @@ function renderPracticeQuestion() {
         let isPart = false;
         if (!isChoice && !isCorrect) isPart = isPartiallyCorrect(rawQ, idx);
         
-        let correctDisplay = isChoice ? (ed && ed.correct ? ed.correct : rawQ.a) : getParsedForQuestion(rawQ).answers.map(p => `<span class="answer-highlight">${escapeHTML(p)}</span>`).join('<span class="answer-sep">｜</span>');
+        let correctDisplay = '';
+        if (isChoice) {
+            let displayOpts = ed && ed.options ? ed.options : (cfg.singleOptions[rawQ.q] || cfg.multiOptions[rawQ.q] || ['A. 选项A', 'B. 选项B', 'C. 选项C', 'D. 选项D']);
+            let correctStr = String(ed && ed.correct ? ed.correct : (cfg.singleCorrect[rawQ.q] || cfg.multiCorrect[rawQ.q] || 'A')).replace(/\s+/g, '').toUpperCase();
+            let correctOptText = '';
+            displayOpts.forEach(o => {
+                const match = o.match(/^([A-Z])[\.．]\s*(.*)/);
+                if (match && correctStr.includes(match[1])) {
+                    correctOptText += (correctOptText ? ' | ' : '') + match[2];
+                }
+            });
+            correctDisplay = `<span class="answer-highlight">${escapeHTML(correctStr)}</span>${correctOptText ? ' (' + escapeHTML(correctOptText) + ')' : ''}`;
+        } else {
+            correctDisplay = getParsedForQuestion(rawQ).answers.map(p => `<span class="answer-highlight">${escapeHTML(p)}</span>`).join('<span class="answer-sep">｜</span>');
+        }
         const explSource = (ed && ed.customExplanation) || rawQ.e;
         
         let title = isCorrect ? '✅ 回答正确' : (isPart ? '⚠️ 部分答对' : '❌ 回答错误');
@@ -2280,8 +2296,8 @@ function renderTestQuestion() {
     const q = getPracticeQuestion(rawQ);
     
     const cfg = loadPracticeCfg(); const editData = loadPracticeEdit(); const ed = editData[rawQ.q] || {};
-    // 统一判断
-    const isChoice = ed.isChoice !== undefined ? ed.isChoice : (rawQ.isChoice === true);
+    // 🔥 修复：使用统一的判断函数
+    const isChoice = isQuestionChoice(rawQ);
     
     let answerHTML = ''; let typeLabel = '';
     if (isChoice) {
