@@ -1152,7 +1152,10 @@ function renderPracticeList(type, keyword) {
             itemType = isMulti ? 'multi' : 'single';
         }
         if (type !== itemType) return;
-        if (kw && (item.q + ' ' + item.a + ' ' + (item.e || '')).toLowerCase().indexOf(kw) === -1) return;
+        
+        const searchQ = (edForList.customQuestion || item.q).toLowerCase();
+        if (kw && (searchQ + ' ' + item.a + ' ' + (item.e || '')).indexOf(kw) === -1) return;
+        
         items.push({ item, idx });
     });
 
@@ -1161,45 +1164,56 @@ function renderPracticeList(type, keyword) {
     }
 
     items.forEach(({ item, idx }) => {
-    const div = document.createElement('div');
-    const isSelected = (idx === practiceSelectedIdx);
-    div.className = 'bank-item' + (isSelected ? ' selected' : '');
-    const isPracticeHidden = editDataForList[item.q] && editDataForList[item.q].practiceHidden;
-    
-    let displayOpts = [];
-    let correctStr = '';
-    let answerDisplayHTML = '';
-
-    if (type === 'fill') {
-    const hasCustomTh = (editDataForList[item.q] && editDataForList[item.q].threshold !== undefined && editDataForList[item.q].threshold !== null);
-    const thTag = hasCustomTh ? `<span style="font-size:10px;color:#3b82f6;background:#dbeafe;padding:1px 6px;border-radius:4px;margin-left:6px;">🎯 ${editDataForList[item.q].threshold}%</span>` : '';
-    answerDisplayHTML = `<span style="color:#b91c1c;font-weight:600;">${escapeHTML(item.a)}</span>${thTag}`;
-} else {
-        const ed = editDataForList[item.q] || {};
-        displayOpts = ed.options || cfg.singleOptions[item.q] || cfg.multiOptions[item.q] || ['A. 选项A', 'B. 选项B', 'C. 选项C', 'D. 选项D'];
-        correctStr = ed.correct || cfg.singleCorrect[item.q] || cfg.multiCorrect[item.q] || 'A';
+        const div = document.createElement('div');
+        const isSelected = (idx === practiceSelectedIdx);
+        div.className = 'bank-item' + (isSelected ? ' selected' : '');
         
-        // 提取正确选项的中文文本
-        const correctLetter = String(correctStr).replace(/\s+/g, '').toUpperCase();
-        const matchOpt = displayOpts.find(o => o.trim().startsWith(correctLetter + '.') || o.trim().startsWith(correctLetter + '．'));
-        let correctText = matchOpt ? matchOpt.replace(/^[A-Z][\.．]\s*/, '') : '';
+        const ed = editDataForList[item.q] || {};
+        const isPracticeHidden = ed.practiceHidden;
+        
+        let displayOpts = [];
+        let correctStr = '';
+        let answerDisplayHTML = '';
+        let displayQuestionText = item.q;
 
-        answerDisplayHTML = `<span style="color:#b91c1c;font-weight:600;">${escapeHTML(correctStr)}</span>${correctText ? ' ' + escapeHTML(correctText) : ''}`;
-    }
-    
-    const optsHtml = (type !== 'fill' && displayOpts.length > 0) ? `<div style="font-size:12px;color:#64748b;margin-top:6px;line-height:1.6;">选项：${displayOpts.map(o=>escapeHTML(o)).join(' | ')}</div>` : '';
-    
-    div.innerHTML = `
-        <div class="bi-idx">#${idx + 1}</div>
-        ${isPracticeHidden ? '<div class="bi-hidden-tag">🔕 已隐藏</div>' : ''}
-        ${item.isChoice ? '<div class="bi-choice-tag">🔘 选择题</div>' : ''}
-        <div class="bi-content">
-            <div class="bi-q">${escapeHTML(item.q)}</div>
-            <div class="bi-a">答案：${answerDisplayHTML}</div>
-            ${optsHtml}
-        </div>
-        <button class="bi-edit-btn" data-idx="${idx}">✏️ 去编辑</button>
-    `;
+        if (type === 'fill') {
+            const hasCustomTh = (ed.threshold !== undefined && ed.threshold !== null);
+            const thTag = hasCustomTh ? `<span style="font-size:10px;color:#3b82f6;background:#dbeafe;padding:1px 6px;border-radius:4px;margin-left:6px;">🎯 ${ed.threshold}%</span>` : '';
+            
+            // 🔥 优先读取带标签的数据，并洗成干净的（ ）进行展示
+            if (ed.customQuestion) {
+                const parsed = parseQuestionWithAnswers(ed.customQuestion, ed.orderSetting || 'all');
+                displayQuestionText = parsed.displayText.replace(/⬜/g, '（ ）');
+                answerDisplayHTML = `<span style="color:#b91c1c;font-weight:600;">${escapeHTML(ed.customAnswer || item.a)}</span>${thTag}`;
+            } else {
+                displayQuestionText = item.q;
+                answerDisplayHTML = `<span style="color:#b91c1c;font-weight:600;">${escapeHTML(item.a)}</span>${thTag}`;
+            }
+        } else {
+            displayOpts = ed.options || cfg.singleOptions[item.q] || cfg.multiOptions[item.q] || ['A. 选项A', 'B. 选项B', 'C. 选项C', 'D. 选项D'];
+            correctStr = ed.correct || cfg.singleCorrect[item.q] || cfg.multiCorrect[item.q] || 'A';
+            displayQuestionText = ed.customQuestion || item.q;
+            
+            const correctLetter = String(correctStr).replace(/\s+/g, '').toUpperCase();
+            const matchOpt = displayOpts.find(o => o.trim().startsWith(correctLetter + '.') || o.trim().startsWith(correctLetter + '．'));
+            let correctText = matchOpt ? matchOpt.replace(/^[A-Z][\.．]\s*/, '') : '';
+
+            answerDisplayHTML = `<span style="color:#b91c1c;font-weight:600;">${escapeHTML(correctStr)}</span>${correctText ? ' ' + escapeHTML(correctText) : ''}`;
+        }
+        
+        const optsHtml = (type !== 'fill' && displayOpts.length > 0) ? `<div style="font-size:12px;color:#64748b;margin-top:6px;line-height:1.6;">选项：${displayOpts.map(o=>escapeHTML(o)).join(' | ')}</div>` : '';
+        
+        div.innerHTML = `
+            <div class="bi-idx">#${idx + 1}</div>
+            ${isPracticeHidden ? '<div class="bi-hidden-tag">🔕 已隐藏</div>' : ''}
+            ${item.isChoice ? '<div class="bi-choice-tag">🔘 选择题</div>' : ''}
+            <div class="bi-content">
+                <div class="bi-q">${escapeHTML(displayQuestionText)}</div>
+                <div class="bi-a">答案：${answerDisplayHTML}</div>
+                ${optsHtml}
+            </div>
+            <button class="bi-edit-btn" data-idx="${idx}">✏️ 去编辑</button>
+        `;
         div.addEventListener('click', (e) => {
             if (e.target.classList.contains('bi-edit-btn')) return;
             practiceSelectedIdx = idx; practiceSelectedType = type;
@@ -1233,6 +1247,7 @@ function showPracticeEditForm(idx, type) {
         const editData = loadPracticeEdit();
         const ed = editData[item.q] || {};
         let customQuestion = ed.customQuestion || item.q;
+        // 兼容：如果旧版数据没带标签，强制按格式重拼一遍标签
         if (!customQuestion.includes('</答案>')) {
             const answers = item.a.split(/[｜|‖]/).map(s => s.trim()).filter(Boolean);
             let ai = 0;
@@ -1289,11 +1304,14 @@ function clearPracticeState() { try { localStorage.removeItem(PRACTICE_STATE_KEY
 function savePracticeState() { if (practiceFinished || practiceQuestions.length === 0) return; const state = { practiceQuestions, practiceAnswers, practiceSubmitted, practiceCurrentIndex, practiceTotalScore, practiceStartTime, practiceTimeLimit, practiceFinished, savedAt: nowTs() }; try { localStorage.setItem(PRACTICE_STATE_KEY, JSON.stringify(state)); } catch (e) { } }
 
 function getParsedForQuestion(rawQ) {
-    const editData = loadPracticeEdit(); const ed = editData[rawQ.q];
-    if (ed && ed.customAnswer) {
-        const answers = ed.customAnswer.split(/[｜|‖]/).map(s => s.trim()).filter(Boolean);
-        return { displayText: ed.customQuestion || rawQ.q, answers, orderRules: new Array(answers.length).fill('order') };
+    const editData = loadPracticeEdit(); 
+    const ed = editData[rawQ.q] || {};
+    
+    if (ed.customQuestion) {
+        const parsed = parseQuestionWithAnswers(ed.customQuestion, ed.orderSetting || 'all');
+        return parsed; 
     }
+    
     const rawAnswers = (rawQ.a || '').split(/[｜|‖]/).map(s => s.trim()).filter(Boolean);
     return { displayText: rawQ.q, answers: rawAnswers, orderRules: new Array(rawAnswers.length).fill('order') };
 }
@@ -1830,12 +1848,11 @@ function getPracticeQuestion(q) {
 function showPracticePreview(idx) {
     const rawQ = questionBank[idx]; if (!rawQ) return;
     const isChoice = isQuestionChoice(rawQ);
-    const cfg = loadPracticeCfg(); const editData = loadPracticeEdit(); const ed = editData[rawQ.q];
+    const cfg = loadPracticeCfg(); const editData = loadPracticeEdit(); const ed = editData[rawQ.q] || {};
     let answerHTML = ''; let typeLabel = '';
     if (isChoice) {
-        let opts = [], correctAnswer = '';
-        if (ed && ed.options) { opts = ed.options; correctAnswer = ed.correct || ''; }
-        else { opts = cfg.singleOptions[rawQ.q] || cfg.multiOptions[rawQ.q] || ['A. 选项A', 'B. 选项B', 'C. 选项C', 'D. 选项D']; correctAnswer = cfg.singleCorrect[rawQ.q] || cfg.multiCorrect[rawQ.q] || 'A'; }
+        let opts = ed.options || cfg.singleOptions[rawQ.q] || ['A. 选项A', 'B. 选项B', 'C. 选项C', 'D. 选项D'];
+        let correctAnswer = ed.correct || cfg.singleCorrect[rawQ.q] || 'A';
         const isMulti = correctAnswer.length > 1; typeLabel = isMulti ? '☑️ 多选题' : '🔘 单选题';
         const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
         answerHTML = `<div class="practice-options">`;
@@ -2086,8 +2103,9 @@ function openPracticeEditor(idx) {
     const cfg = loadPracticeCfg();
     const isChoice = ed.isChoice !== undefined ? ed.isChoice : (rawQ.isChoice === true);
     let customQuestion = ed.customQuestion || rawQ.q;
-    if (isChoice) customQuestion = stripAnswerMarkers(customQuestion);
-    if (!isChoice && !customQuestion.includes('</答案>')) {
+    if (isChoice) {
+        customQuestion = stripAnswerMarkers(customQuestion);
+    } else if (!customQuestion.includes('</答案>')) {
         const answers = (rawQ.a || '').split(/[｜|‖]/).map(s => s.trim()).filter(Boolean);
         let ai = 0;
         customQuestion = customQuestion.replace(/（\s*）|\(\s*\)/g, () => `</答案>${answers[ai++] || ''}<答案\\>`);
@@ -2223,14 +2241,19 @@ function getEditorOptions(containerId) {
 // ==================== 保存练习编辑器 ====================
 function savePracticeEditor() {
     if (editingPracticeIdx < 0) return;
-    const rawQ = questionBank[editingPracticeIdx]; if (!rawQ) return;
-    const editorContent = document.getElementById('editorContent'); if (!editorContent) return;
+    const rawQ = questionBank[editingPracticeIdx]; 
+    if (!rawQ) return;
+    const editorContent = document.getElementById('editorContent'); 
+    if (!editorContent) return;
+    
     let customQuestion = (editorContent.innerText || editorContent.textContent || '').replace(/\u00a0/g, ' ').replace(/\r\n/g, '\n').trim();
     customQuestion = customQuestion.replace(/<答案\s*>/g, '<答案\\>').replace(/<\/答案\s*>/g, '</答案>');
     customQuestion = customQuestion.replace(/<\/固\s*>/g, '</固>').replace(/<固\s*>/g, '<固\\>');
     customQuestion = customQuestion.replace(/<\/乱序\s*>/g, '</乱序>').replace(/<乱序\s*>/g, '<乱序\\>');
+    
     const isChoice = document.getElementById('editorChoiceCheck').checked;
     if (isChoice) customQuestion = stripAnswerMarkers(customQuestion);
+    
     const options = getEditorOptions('editorOptionsList');
     const correctEl = document.getElementById('editorCorrect');
     const correct = correctEl ? correctEl.value.trim().toUpperCase() : '';
@@ -2244,8 +2267,12 @@ function savePracticeEditor() {
     }
 
     let customAnswer = '';
-    try { const parsed = parseQuestionWithAnswers(customQuestion, orderSetting); customAnswer = parsed.answers.join('｜'); } catch (e) { }
-    
+    try { 
+        const parsed = parseQuestionWithAnswers(customQuestion, orderSetting); 
+        customAnswer = parsed.answers.join('｜'); 
+    } catch (e) { }
+
+    // 🔥 核心修复：只存缓存，绝对不改动基础题库，保持原样
     const editData = loadPracticeEdit();
     editData[rawQ.q] = { 
         customQuestion: customQuestion || rawQ.q, 
@@ -2257,9 +2284,16 @@ function savePracticeEditor() {
         threshold: customThreshold,
         updatedAt: nowTs() 
     };
-    savePracticeEdit(editData); hasUnsavedChanges = true;
-    const modal = document.getElementById('practiceEditorModal'); if (modal) modal.classList.remove('active');
-    showToast('✅ 练习编辑已保存');
+    savePracticeEdit(editData); 
+    hasUnsavedChanges = true;
+
+    renderPracticeList(practiceSelectedType, ''); 
+    renderBankList(''); 
+    renderStudyList(''); 
+    
+    const modal = document.getElementById('practiceEditorModal'); 
+    if (modal) modal.classList.remove('active');
+    showToast('✅ 保存成功，已同步展示');
 }
 
 // ==================== 核心绑定（全部用 on() 保护） ====================
