@@ -1458,41 +1458,42 @@ function buildFillQuestionHTMLFromParsed(parsed, answerData, submitted, rawQ) {
                 }
             }
         } else if (orderSetting === 'partial') {
-            const groups = [];
-            let cur = null;
+            // 🔥 核心修复：直接对每个位置根据 rules 和池子逻辑计算
+            const usedCorrect = new Array(answers.length).fill(false);
+            
+            // 第一步：先处理固定标签，必须物理位置一致
             for (let i = 0; i < answers.length; i++) {
-                const r = rules[i] || 'order';
-                if (!cur || cur.rule !== r) { cur = { rule: r, indices: [i] }; groups.push(cur); }
-                else { cur.indices.push(i); }
-            }
-            let cursor = 0;
-            for (const g of groups) {
-                const n = g.indices.length;
-                if (g.rule === 'fixed') {
-                    for (let k = 0; k < n; k++) {
-                        const ci = g.indices[k];
-                        const si = cursor + k;
-                        const studentAns = (answerData[si] || '').trim();
-                        if (!studentAns) continue;
-                        if (answerSimilarity(studentAns, answers[ci] || '') >= threshold) matchedCorrectIndex[si] = ci;
+                if (rules[i] === 'fixed') {
+                    const studentAns = (answerData[i] || '').trim();
+                    if (studentAns && answerSimilarity(studentAns, answers[i] || '') >= threshold) {
+                        matchedCorrectIndex[i] = i;
+                        usedCorrect[i] = true; // 固定答案已被消耗
                     }
-                } else {
-                    const used = new Array(n).fill(false);
-                    for (let k = 0; k < n; k++) {
-                        const si = cursor + k;
-                        const studentAns = (answerData[si] || '').trim();
-                        if (!studentAns) continue;
-                        if (!used[k] && answerSimilarity(studentAns, answers[g.indices[k]] || '') >= threshold) {
-                            matchedCorrectIndex[si] = g.indices[k]; used[k] = true; continue;
-                        }
-                        for (let j = 0; j < n; j++) {
-                            if (!used[j] && answerSimilarity(studentAns, answers[g.indices[j]] || '') >= threshold) {
-                                matchedCorrectIndex[si] = g.indices[j]; used[j] = true; break;
-                            }
+                }
+            }
+            
+            // 第二步：处理乱序标签（池子匹配，但避开已经消耗掉的固定答案）
+            for (let i = 0; i < answers.length; i++) {
+                if (rules[i] === 'order' && matchedCorrectIndex[i] === -1) {
+                    const studentAns = (answerData[i] || '').trim();
+                    if (!studentAns) continue;
+                    
+                    // 先找自己对应的（如果没被消耗）
+                    if (!usedCorrect[i] && answerSimilarity(studentAns, answers[i] || '') >= threshold) {
+                        matchedCorrectIndex[i] = i;
+                        usedCorrect[i] = true;
+                        continue;
+                    }
+                    
+                    // 再在整个池子里找（避开已经被消耗的）
+                    for (let j = 0; j < answers.length; j++) {
+                        if (!usedCorrect[j] && answerSimilarity(studentAns, answers[j] || '') >= threshold) {
+                            matchedCorrectIndex[i] = j;
+                            usedCorrect[j] = true;
+                            break;
                         }
                     }
                 }
-                cursor += n;
             }
         } else {
             // 🔥 全部允许乱序：只要这个答案在池子里，就给它打钩，不管在哪个框
@@ -1605,38 +1606,58 @@ function evaluateFillQuestion(rawQ, answer) {
             }
         }
     } else {
-        const groups = []; let cur = null;
+        // 🔥 核心修复：完全抛弃组划分，直接根据 rules 数组对每个物理位置进行判定
         for (let i = 0; i < correctParts.length; i++) {
-            const r = rules[i] || 'order';
-            if (!cur || cur.rule !== r) { cur = { rule: r, indices: [i] }; groups.push(cur); }
-            else { cur.indices.push(i); }
-        }
-        let cursor = 0;
-        for (const g of groups) {
-            const n = g.indices.length;
-            if (g.rule === 'fixed') {
-                for (let k = 0; k < n; k++) {
-                    const ci = g.indices[k]; const si = cursor + k;
-                    if (answerSimilarity((studentAns[si] || '').trim(), correctParts[ci] || '') >= threshold) {
-                        results[si].status = 'correct'; results[si].score = 5 / correctParts.length; results[si].matchedIndex = ci;
-                    }
-                }
-            } else {
-                const used = new Array(n).fill(false);
-                for (let k = 0; k < n; k++) {
-                    const si = cursor + k; const stu = (studentAns[si] || '').trim();
-                    if (!stu) continue;
-                    if (!used[k] && answerSimilarity(stu, correctParts[g.indices[k]] || '') >= threshold) {
-                        results[si].status = 'correct'; results[si].score = 5 / correctParts.length; results[si].matchedIndex = g.indices[k]; used[k] = true; continue;
-                    }
-                    for (let j = 0; j < n; j++) {
-                        if (!used[j] && answerSimilarity(stu, correctParts[g.indices[j]] || '') >= threshold) {
-                            results[si].status = 'correct'; results[si].score = 5 / correctParts.length; results[si].matchedIndex = g.indices[j]; used[j] = true; break;
-                        }
-                    }
+            const rule = rules[i] || 'order';
+            const stu = (studentAns[i] || '').trim();
+            if (!stu) continue;
+
+            if (rule === 'fixed') {
+                // 固定标签包裹的：必须按物理位置严格匹配，错一个都不行
+                if (answerSimilarity(stu, correctParts[i] || '') >= threshold) {
+                    results[i].status = 'correct';
+                    results[i].score = 5 / correctParts.length;
+                    results[i].matchedIndex = i;
                 }
             }
-            cursor += n;
+        }
+        
+        // 乱序池子匹配（需要在固定组之外进行，以免重复抢占了固定的答案）
+        // 先收集所有当前是 'order' 类型的索引，以及它们对应的可用答案池
+        const orderIndices = [];
+        const orderCorrectPool = [];
+        for (let i = 0; i < correctParts.length; i++) {
+            if ((rules[i] || 'order') === 'order') {
+                orderIndices.push(i);
+                orderCorrectPool.push({ idx: i, val: correctParts[i], used: false });
+            }
+        }
+        
+        // 遍历所有学生答案中，物理位置对应是 order 的输入框
+        for (const si of orderIndices) {
+            const stu = (studentAns[si] || '').trim();
+            if (!stu) continue;
+            // 判断是否已经因为物理位置正确被标记（其实上面没标，因为只处理 fixed）
+            
+            // 优先找和自己物理位置对应的标准答案（如果还没被抢走）
+            let matched = false;
+            for (let j = 0; j < orderCorrectPool.length; j++) {
+                const poolItem = orderCorrectPool[j];
+                if (!poolItem.used && poolItem.idx === si && answerSimilarity(stu, poolItem.val) >= threshold) {
+                    results[si].status = 'correct'; results[si].score = 5 / correctParts.length; results[si].matchedIndex = poolItem.idx;
+                    poolItem.used = true; matched = true; break;
+                }
+            }
+            if (matched) continue;
+            
+            // 如果没匹配到物理位置，就从整个乱序池子里找
+            for (let j = 0; j < orderCorrectPool.length; j++) {
+                const poolItem = orderCorrectPool[j];
+                if (!poolItem.used && answerSimilarity(stu, poolItem.val) >= threshold) {
+                    results[si].status = 'correct'; results[si].score = 5 / correctParts.length; results[si].matchedIndex = poolItem.idx;
+                    poolItem.used = true; break;
+                }
+            }
         }
     }
 
@@ -2190,14 +2211,9 @@ function parseQuestionWithAnswers(text, orderSetting) {
             answers.push(text.slice(afterStart, endPos).trim()); 
             
             if (!hasExplicitBlocks) {
-                groupRules.push(0);
-                blockRules[0] = (orderSetting === 'all') ? 'order' : 'fixed'; // 如果选全局乱序，这里给 order
+                groupRules.push((orderSetting === 'partial' || orderSetting === 'all') ? 'order' : 'fixed');
             } else {
-                if (currentBlockType === null) {
-                    groupRules.push(-1); 
-                } else {
-                    groupRules.push(blockIdx);
-                }
+                groupRules.push(currentBlockType || 'order'); // 直接记录当前所在的标签类型
             }
             displayText += '⬜';
             i = endPos + endTagLen; continue;
@@ -2212,13 +2228,17 @@ function parseQuestionWithAnswers(text, orderSetting) {
             q = q.replace(/（\s*）|\(\s*\)|_{2,}|＿{2,}/g, () => { if (ai < rawAnswers.length) { answers.push(rawAnswers[ai++]); return '⬜'; } return '（）'; });
             while (ai < rawAnswers.length) { answers.push(rawAnswers[ai++]); q += ' ⬜'; }
             displayText = q;
-            const fallbackType = (orderSetting === 'all') ? 'order' : 'fixed';
-            for(let j=0; j<answers.length; j++){ groupRules.push(0); }
-            blockRules[0] = fallbackType;
+            for(let j=0; j<answers.length; j++){ groupRules.push(orderSetting === 'all' ? 'order' : 'fixed'); }
         }
     }
     
-    return { displayText, answers, groupRules, blockRules, originalText: text };
+    // 🔥 核心：将原来的 blockRules 直接转换并返回为简易的 orderRules 数组，直接代表每一个空的物理位置属性
+    let orderRules = [];
+    if (hasExplicitBlocks || answers.length > 0) {
+        orderRules = groupRules.map(r => r === 'fixed' ? 'fixed' : 'order');
+    }
+    
+    return { displayText, answers, orderRules, originalText: text };
 }
 
 // ==================== 测试模式 ====================
