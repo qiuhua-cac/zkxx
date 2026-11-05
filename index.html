@@ -682,6 +682,8 @@ const MASTERED_KEY = NS + 'mastered';
 const USER_SESSION_KEY = NS + 'user_session';
 const BANK_TS_KEY = NS + 'bank_ts';
 const PRACTICE_STATE_KEY = NS + 'practice_state';
+const ADMIN_ACCOUNTS_KEY = NS + 'admin_accounts';
+const ADMIN_PASSWORDS_KEY = NS + 'admin_passwords';
 
 const API_BASE = 'https://qhtvyy.com:3000';
 
@@ -691,7 +693,8 @@ const ADMIN_PASSWORD = 'A';
 
 // SQL 白名单：只放行本独立系统的键
 const SQL_ALLOWED_KEYS = [
-    STORAGE_KEY, PRACTICE_CFG_KEY, PRACTICE_EDIT_KEY, MASTERED_KEY, USER_SESSION_KEY, BANK_TS_KEY, PRACTICE_STATE_KEY
+    STORAGE_KEY, PRACTICE_CFG_KEY, PRACTICE_EDIT_KEY, MASTERED_KEY, USER_SESSION_KEY, BANK_TS_KEY, PRACTICE_STATE_KEY,
+    ADMIN_ACCOUNTS_KEY, ADMIN_PASSWORDS_KEY
 ];
 
 // ==================== SQL 缓存与拦截 ====================
@@ -913,10 +916,13 @@ function consumeAdminPassTicket() {
         return obj;
     } catch (e) { return null; }
 }
-// ===== 管理员多账号 / 多密码存储（账号与密码随意搭配） =====
+// ===== 管理员多账号 / 多密码存储（SQL 优先，localStorage 兜底，账号与密码随意搭配） =====
 function loadAdminAccounts() {
+    if (window._SQL_CACHE && Array.isArray(window._SQL_CACHE[ADMIN_ACCOUNTS_KEY]) && window._SQL_CACHE[ADMIN_ACCOUNTS_KEY].length) {
+        return window._SQL_CACHE[ADMIN_ACCOUNTS_KEY];
+    }
     try {
-        const raw = localStorage.getItem(NS + 'admin_accounts');
+        const raw = localStorage.getItem(ADMIN_ACCOUNTS_KEY);
         if (raw) {
             const arr = JSON.parse(raw);
             if (Array.isArray(arr) && arr.length) return arr;
@@ -925,11 +931,15 @@ function loadAdminAccounts() {
     return [ADMIN_USERNAME];
 }
 function saveAdminAccounts(list) {
-    try { localStorage.setItem(NS + 'admin_accounts', JSON.stringify(list)); } catch (e) { }
+    try { localStorage.setItem(ADMIN_ACCOUNTS_KEY, JSON.stringify(list)); } catch (e) { }
+    if (window._SQL_CACHE) window._SQL_CACHE[ADMIN_ACCOUNTS_KEY] = list;
 }
 function loadAdminPasswords() {
+    if (window._SQL_CACHE && Array.isArray(window._SQL_CACHE[ADMIN_PASSWORDS_KEY]) && window._SQL_CACHE[ADMIN_PASSWORDS_KEY].length) {
+        return window._SQL_CACHE[ADMIN_PASSWORDS_KEY];
+    }
     try {
-        const raw = localStorage.getItem(NS + 'admin_passwords');
+        const raw = localStorage.getItem(ADMIN_PASSWORDS_KEY);
         if (raw) {
             const arr = JSON.parse(raw);
             if (Array.isArray(arr) && arr.length) return arr;
@@ -938,13 +948,34 @@ function loadAdminPasswords() {
     return [ADMIN_PASSWORD];
 }
 function saveAdminPasswords(list) {
-    try { localStorage.setItem(NS + 'admin_passwords', JSON.stringify(list)); } catch (e) { }
+    try { localStorage.setItem(ADMIN_PASSWORDS_KEY, JSON.stringify(list)); } catch (e) { }
+    if (window._SQL_CACHE) window._SQL_CACHE[ADMIN_PASSWORDS_KEY] = list;
 }
 // 账号属于管理员集合 且 密码属于密码集合 => 任意搭配均可登录
 function checkAdminCredential(username, pwd) {
     const accounts = loadAdminAccounts();
     const passwords = loadAdminPasswords();
     return accounts.includes(username) && passwords.includes(pwd);
+}
+// 立即把账号/密码集合写入 SQL（跨端同步），失败不回滚本地
+async function pushAdminAuthToSQL() {
+    const accounts = loadAdminAccounts();
+    const passwords = loadAdminPasswords();
+    const payload = {
+        [ADMIN_ACCOUNTS_KEY]: accounts,
+        [ADMIN_PASSWORDS_KEY]: passwords
+    };
+    try {
+        const resp = await fetch(API_BASE + '/api/save-data', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        return resp.ok;
+    } catch (e) {
+        console.warn('⚠️ 管理员账号/密码同步 SQL 失败，已保留本地缓存', e);
+        return false;
+    }
 }
 
 // ==================== 用户 API ====================
@@ -2484,22 +2515,31 @@ if (isSkipSQLInit) {
 } else {
     // 后台静默拉取，不阻塞任何界面
     initSQLData().then(() => {
-        if (window._SQL_CACHE && Object.keys(window._SQL_CACHE).length > 0) {
-            const oldBankStr = JSON.stringify(questionBank);
-            // 重新解析云端的最新题库
-            loadBank();
-            const newBankStr = JSON.stringify(questionBank);
-            
-            // 如果云端数据与本地不同，说明云端有更新，静默刷新界面
-            if (oldBankStr !== newBankStr) {
-                console.log('🔄 发现云端题库有更新，后台静默同步中...');
-                renderStudyList((document.getElementById('studySearch') || {}).value || '');
-                if (document.getElementById('bankModal') && document.getElementById('bankModal').classList.contains('active')) {
-                    renderBankList('');
-                }
+    if (window._SQL_CACHE && Object.keys(window._SQL_CACHE).length > 0) {
+        const oldBankStr = JSON.stringify(questionBank);
+        // 重新解析云端的最新题库
+        loadBank();
+        const newBankStr = JSON.stringify(questionBank);
+        
+        // 如果云端数据与本地不同，说明云端有更新，静默刷新界面
+        if (oldBankStr !== newBankStr) {
+            console.log('🔄 发现云端题库有更新，后台静默同步中...');
+            renderStudyList((document.getElementById('studySearch') || {}).value || '');
+            if (document.getElementById('bankModal') && document.getElementById('bankModal').classList.contains('active')) {
+                renderBankList('');
             }
         }
-    }).catch(e => console.warn('后台同步云端失败', e));
+        // 把 SQL 里的管理员账号/密码同步到本地缓存（跨端生效）
+        try {
+            if (Array.isArray(window._SQL_CACHE[ADMIN_ACCOUNTS_KEY]) && window._SQL_CACHE[ADMIN_ACCOUNTS_KEY].length) {
+                localStorage.setItem(ADMIN_ACCOUNTS_KEY, JSON.stringify(window._SQL_CACHE[ADMIN_ACCOUNTS_KEY]));
+            }
+            if (Array.isArray(window._SQL_CACHE[ADMIN_PASSWORDS_KEY]) && window._SQL_CACHE[ADMIN_PASSWORDS_KEY].length) {
+                localStorage.setItem(ADMIN_PASSWORDS_KEY, JSON.stringify(window._SQL_CACHE[ADMIN_PASSWORDS_KEY]));
+            }
+        } catch (e) { }
+    }
+}).catch(e => console.warn('后台同步云端失败', e));
 }
 
     // ---------- 学习区 ----------
@@ -2729,72 +2769,76 @@ setTimeout(() => {
     let _adminPwdDraft = [];
 
     function renderAdminAccountList() {
-        const box = document.getElementById('adminAccountList');
-        if (!box) return;
-        box.innerHTML = '';
-        if (!_adminAccDraft.length) {
-            box.innerHTML = '<div style="font-size:12px;color:#94a3b8;padding:6px 0;">暂无账号</div>';
-            return;
-        }
-        _adminAccDraft.forEach((acc, i) => {
-            const row = document.createElement('div');
-            row.style.cssText = 'display:flex;align-items:center;gap:8px;';
-            row.innerHTML = `<input type="text" value="${escapeHTML(acc)}" data-acc-idx="${i}" style="flex:1;padding:7px 10px;font-size:12px;border:1.5px solid #c8d9ec;border-radius:8px;outline:none;background:#f9fcff;"><button class="btn btn-sm btn-danger" data-acc-del="${i}" style="padding:5px 10px;">删除</button>`;
-            box.appendChild(row);
-        });
-        box.querySelectorAll('[data-acc-idx]').forEach(inp => {
-            inp.addEventListener('input', () => {
-                const i = parseInt(inp.dataset.accIdx);
-                if (_adminAccDraft[i] !== undefined) _adminAccDraft[i] = inp.value;
-            });
-        });
-        box.querySelectorAll('[data-acc-del]').forEach(btn => {
-            btn.addEventListener('click', async () => {
-                const i = parseInt(btn.dataset.accDel);
-                if (_adminAccDraft.length <= 1) { showToast('至少保留一个账号'); return; }
-                const code = await showCustomPrompt('确认删除该账号，请输入确认代码');
-                if (code !== 'qiuhua') { if (code !== null) showToast('❌ 密码错误，删除已取消'); return; }
-                _adminAccDraft.splice(i, 1);
-                saveAdminAccounts(_adminAccDraft);
-                renderAdminAccountList();
-                showToast('✅ 已删除该账号');
-            });
-        });
+    const box = document.getElementById('adminAccountList');
+    if (!box) return;
+    box.innerHTML = '';
+    if (!_adminAccDraft.length) {
+        box.innerHTML = '<div style="font-size:12px;color:#94a3b8;padding:6px 0;">暂无账号</div>';
+        return;
     }
+    _adminAccDraft.forEach((acc, i) => {
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex;align-items:center;gap:8px;';
+        row.innerHTML = `<input type="text" value="${escapeHTML(acc)}" data-acc-idx="${i}" style="flex:1;padding:7px 10px;font-size:12px;border:1.5px solid #c8d9ec;border-radius:8px;outline:none;background:#f9fcff;"><button class="btn btn-sm btn-danger" data-acc-del="${i}" style="padding:5px 10px;">删除</button>`;
+        box.appendChild(row);
+    });
+    box.querySelectorAll('[data-acc-idx]').forEach(inp => {
+        inp.addEventListener('input', () => {
+            const i = parseInt(inp.dataset.accIdx);
+            if (_adminAccDraft[i] !== undefined) _adminAccDraft[i] = inp.value;
+        });
+    });
+    box.querySelectorAll('[data-acc-del]').forEach(btn => {
+        btn.addEventListener('click', async () => {
+            const i = parseInt(btn.dataset.accDel);
+            if (_adminAccDraft.length <= 1) { showToast('至少保留一个账号'); return; }
+            const code = await showCustomPrompt('确认删除该账号，请输入确认代码');
+            if (code !== 'qiuhua') { if (code !== null) showToast('❌ 密码错误，删除已取消'); return; }
+            _adminAccDraft.splice(i, 1);
+            saveAdminAccounts(_adminAccDraft);
+            renderAdminAccountList();
+            pushAdminAuthToSQL().then(ok => {
+                showToast(ok ? '✅ 已删除该账号并同步 SQL' : '✅ 已删除该账号（SQL 同步失败，已存本地）');
+            });
+        });
+    });
+}
 
     function renderAdminPasswordList() {
-        const box = document.getElementById('adminPasswordList');
-        if (!box) return;
-        box.innerHTML = '';
-        if (!_adminPwdDraft.length) {
-            box.innerHTML = '<div style="font-size:12px;color:#94a3b8;padding:6px 0;">暂无密码</div>';
-            return;
-        }
-        _adminPwdDraft.forEach((pwd, i) => {
-            const row = document.createElement('div');
-            row.style.cssText = 'display:flex;align-items:center;gap:8px;';
-            row.innerHTML = `<input type="text" value="${escapeHTML(pwd)}" data-pwd-idx="${i}" style="flex:1;padding:7px 10px;font-size:12px;border:1.5px solid #c8d9ec;border-radius:8px;outline:none;background:#f9fcff;"><button class="btn btn-sm btn-danger" data-pwd-del="${i}" style="padding:5px 10px;">删除</button>`;
-            box.appendChild(row);
-        });
-        box.querySelectorAll('[data-pwd-idx]').forEach(inp => {
-            inp.addEventListener('input', () => {
-                const i = parseInt(inp.dataset.pwdIdx);
-                if (_adminPwdDraft[i] !== undefined) _adminPwdDraft[i] = inp.value;
-            });
-        });
-        box.querySelectorAll('[data-pwd-del]').forEach(btn => {
-            btn.addEventListener('click', async () => {
-                const i = parseInt(btn.dataset.pwdDel);
-                if (_adminPwdDraft.length <= 1) { showToast('至少保留一个密码'); return; }
-                const code = await showCustomPrompt('确认删除该密码，请输入确认代码');
-                if (code !== 'qiuhua') { if (code !== null) showToast('❌ 密码错误，删除已取消'); return; }
-                _adminPwdDraft.splice(i, 1);
-                saveAdminPasswords(_adminPwdDraft);
-                renderAdminPasswordList();
-                showToast('✅ 已删除该密码');
-            });
-        });
+    const box = document.getElementById('adminPasswordList');
+    if (!box) return;
+    box.innerHTML = '';
+    if (!_adminPwdDraft.length) {
+        box.innerHTML = '<div style="font-size:12px;color:#94a3b8;padding:6px 0;">暂无密码</div>';
+        return;
     }
+    _adminPwdDraft.forEach((pwd, i) => {
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex;align-items:center;gap:8px;';
+        row.innerHTML = `<input type="text" value="${escapeHTML(pwd)}" data-pwd-idx="${i}" style="flex:1;padding:7px 10px;font-size:12px;border:1.5px solid #c8d9ec;border-radius:8px;outline:none;background:#f9fcff;"><button class="btn btn-sm btn-danger" data-pwd-del="${i}" style="padding:5px 10px;">删除</button>`;
+        box.appendChild(row);
+    });
+    box.querySelectorAll('[data-pwd-idx]').forEach(inp => {
+        inp.addEventListener('input', () => {
+            const i = parseInt(inp.dataset.pwdIdx);
+            if (_adminPwdDraft[i] !== undefined) _adminPwdDraft[i] = inp.value;
+        });
+    });
+    box.querySelectorAll('[data-pwd-del]').forEach(btn => {
+        btn.addEventListener('click', async () => {
+            const i = parseInt(btn.dataset.pwdDel);
+            if (_adminPwdDraft.length <= 1) { showToast('至少保留一个密码'); return; }
+            const code = await showCustomPrompt('确认删除该密码，请输入确认代码');
+            if (code !== 'qiuhua') { if (code !== null) showToast('❌ 密码错误，删除已取消'); return; }
+            _adminPwdDraft.splice(i, 1);
+            saveAdminPasswords(_adminPwdDraft);
+            renderAdminPasswordList();
+            pushAdminAuthToSQL().then(ok => {
+                showToast(ok ? '✅ 已删除该密码并同步 SQL' : '✅ 已删除该密码（SQL 同步失败，已存本地）');
+            });
+        });
+    });
+}
 
     on('adminAccountBtn', 'click', function () {
         _adminAccDraft = loadAdminAccounts().slice();
@@ -2818,19 +2862,20 @@ setTimeout(() => {
         renderAdminPasswordList();
     });
     on('adminAccountSave', 'click', async function () {
-        const cleanedAcc = _adminAccDraft.map(s => String(s || '').trim()).filter(Boolean);
-        const cleanedPwd = _adminPwdDraft.map(s => String(s || '').trim()).filter(Boolean);
-        if (!cleanedAcc.length) { showToast('至少保留一个有效账号'); return; }
-        if (!cleanedPwd.length) { showToast('至少保留一个有效密码'); return; }
-        const code = await showCustomPrompt('保存账号/密码需输入确认代码');
-        if (code !== 'qiuhua') { if (code !== null) showToast('❌ 密码错误，保存已取消'); return; }
-        saveAdminAccounts(cleanedAcc);
-        saveAdminPasswords(cleanedPwd);
-        _adminAccDraft = cleanedAcc.slice();
-        _adminPwdDraft = cleanedPwd.slice();
-        showToast('✅ 管理员账号/密码已更新');
-        document.getElementById('adminAccountModal').classList.remove('active');
-    });
+    const cleanedAcc = _adminAccDraft.map(s => String(s || '').trim()).filter(Boolean);
+    const cleanedPwd = _adminPwdDraft.map(s => String(s || '').trim()).filter(Boolean);
+    if (!cleanedAcc.length) { showToast('至少保留一个有效账号'); return; }
+    if (!cleanedPwd.length) { showToast('至少保留一个有效密码'); return; }
+    const code = await showCustomPrompt('保存账号/密码需输入确认代码');
+    if (code !== 'qiuhua') { if (code !== null) showToast('❌ 密码错误，保存已取消'); return; }
+    saveAdminAccounts(cleanedAcc);
+    saveAdminPasswords(cleanedPwd);
+    _adminAccDraft = cleanedAcc.slice();
+    _adminPwdDraft = cleanedPwd.slice();
+    const ok = await pushAdminAuthToSQL();
+    showToast(ok ? '✅ 管理员账号/密码已更新并同步 SQL' : '✅ 已更新（SQL 同步失败，已存本地）');
+    document.getElementById('adminAccountModal').classList.remove('active');
+});
 
     // ---------- 练习核心按钮 ----------
     on('practiceClose', 'click', function () {
