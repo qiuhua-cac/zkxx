@@ -714,9 +714,9 @@ function sendToServer(key, data) {
 
 async function initSQLData() {
     try {
-        // 加入超时机制，最多只等 3 秒，超时直接放弃，保护用户体验
+        // 放宽超时机制到 8 秒，避免稍微网络波动就断开
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 3000);
+        const timeoutId = setTimeout(() => controller.abort(), 8000);
         
         const resp = await fetch(API_BASE + '/api/get-all-data?t=' + Date.now(), { 
             cache: 'no-store',
@@ -1050,7 +1050,32 @@ function saveMasteredListForCurrentUser(list) {
 async function syncMasteredToCloud() {
     if (!currentUser || !currentUser.username) return false;
     const map = loadMasteredMap();
-    return sendToServer(MASTERED_KEY, map);
+    const ok = await sendToServer(MASTERED_KEY, map);
+    // 如果发送成功，强制刷新一下本地缓存，防止其它端刚点完，这边还是旧的
+    if (ok) {
+        const latest = await fetchLatestMasteredFromServer();
+        if (latest) {
+            const localMap = loadMasteredMap();
+            Object.assign(localMap, latest);
+            saveMasteredMap(localMap);
+            if (isStudyMode) renderStudyList(document.getElementById('studySearch').value || '');
+        }
+    }
+    return ok;
+}
+
+// 新增极速拉取单独 Mastered 的函数
+async function fetchLatestMasteredFromServer() {
+    try {
+        const resp = await fetch(API_BASE + '/api/get-all-data?t=' + Date.now(), { cache: 'no-store' });
+        if (!resp.ok) return null;
+        const json = await resp.json();
+        if (json.success && json.data && json.data[MASTERED_KEY]) {
+            const raw = json.data[MASTERED_KEY];
+            return typeof raw === 'string' ? JSON.parse(raw) : raw;
+        }
+    } catch (e) {}
+    return null;
 }
 async function loadMasteredFromCloud() {
     if (!currentUser || !currentUser.username) return;
@@ -2102,6 +2127,8 @@ function refreshLoginBtns() {
         }
     }
 }
+let syncTimer = null;
+
 async function tryRestoreUserSession() {
     // 注意：这里不再强制清空 currentAdmin，管理员登录态由 DOMContentLoaded 中的一次性通行证统一决定
     const raw = window.localStorage.getItem(USER_SESSION_KEY);
@@ -2114,13 +2141,47 @@ async function tryRestoreUserSession() {
                 currentUser = { username: obj.username, password: obj.password };
                 window._SQL_CACHE[USER_SESSION_KEY] = obj;
                 if (typeof loadMasteredFromCloud === 'function') {
-                    loadMasteredFromCloud().then(() => renderStudyList(''));
+                    loadMasteredFromCloud().then(() => {
+                        renderStudyList('');
+                        startCrossDeviceSync(); // 启动轮询同步
+                    });
                 }
             } else { currentUser = null; }
         } catch(e) { currentUser = null; }
     } else { currentUser = null; }
     
     refreshLoginBtns();
+}
+
+// 新增：跨端静默轮询同步
+function startCrossDeviceSync() {
+    if (syncTimer) clearInterval(syncTimer);
+    syncTimer = setInterval(async () => {
+        if (!currentUser || !currentUser.username) return;
+        // 如果保护仓打开了或者正在弹窗编辑，暂停拉取以防卡顿
+        const modal = document.getElementById('sqlProtectModal'); 
+        if (modal && modal.classList.contains('active')) return;
+
+        const latest = await fetchLatestMasteredFromServer();
+        if (latest) {
+            const localMap = loadMasteredMap();
+            const localUserList = localMap[currentUser.username] || [];
+            const remoteUserList = latest[currentUser.username] || [];
+            
+            // 比对当前用户的已会列表，如果有差异才更新
+            const localStr = JSON.stringify(localUserList.sort());
+            const remoteStr = JSON.stringify(remoteUserList.sort());
+            
+            if (localStr !== remoteStr) {
+                console.log('🔄 检测到其他设备已更新「已会」状态，后台同步中...');
+                Object.assign(localMap, latest);
+                saveMasteredMap(localMap);
+                if (isStudyMode) {
+                    renderStudyList(document.getElementById('studySearch').value || '');
+                }
+            }
+        }
+    }, 5000); // 每 5 秒拉取一次极小数据，功耗极低，实现秒同步
 }
 
 // ==================== 预览与代码生成 ====================
