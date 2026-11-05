@@ -1050,31 +1050,34 @@ function saveMasteredListForCurrentUser(list) {
 async function syncMasteredToCloud() {
     if (!currentUser || !currentUser.username) return false;
     const map = loadMasteredMap();
+    // 直接推送到服务器
     const ok = await sendToServer(MASTERED_KEY, map);
-    // 如果发送成功，强制刷新一下本地缓存，防止其它端刚点完，这边还是旧的
-    if (ok) {
-        const latest = await fetchLatestMasteredFromServer();
-        if (latest) {
-            const localMap = loadMasteredMap();
-            Object.assign(localMap, latest);
-            saveMasteredMap(localMap);
-            if (isStudyMode) renderStudyList(document.getElementById('studySearch').value || '');
-        }
-    }
+    // 成功后不盲目拉取，防止覆盖刚刚的操作；本地界面已经由 onToggleMastered 更新过了
     return ok;
 }
 
-// 新增极速拉取单独 Mastered 的函数
+// 新增极速拉取单独 Mastered 的函数 (加入防超时)
 async function fetchLatestMasteredFromServer() {
     try {
-        const resp = await fetch(API_BASE + '/api/get-all-data?t=' + Date.now(), { cache: 'no-store' });
+        const controller = new AbortController();
+        // 放宽到 10 秒，坚决防止因为网络一点波动就被强行掐断
+        const timeoutId = setTimeout(() => controller.abort(), 10000);
+        
+        const resp = await fetch(API_BASE + '/api/get-all-data?t=' + Date.now(), { 
+            cache: 'no-store',
+            signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+        
         if (!resp.ok) return null;
         const json = await resp.json();
         if (json.success && json.data && json.data[MASTERED_KEY]) {
             const raw = json.data[MASTERED_KEY];
             return typeof raw === 'string' ? JSON.parse(raw) : raw;
         }
-    } catch (e) {}
+    } catch (e) {
+        // 静默失败，防止卡死
+    }
     return null;
 }
 async function loadMasteredFromCloud() {
@@ -1108,7 +1111,22 @@ async function onToggleMastered(questionText, btnEl) {
     }
     showToast(willAdd ? '✅ 已标记为已会' : '已取消已会');
     if (isStudyMode) renderStudyList(document.getElementById('studySearch').value || '');
-    syncMasteredToCloud();
+
+    // 核心：强制推送并立即拉取一次，确保本地状态和服务器绝对一致
+    await syncMasteredToCloud().then(async () => {
+        // 延迟 200ms 后在后台强制把服务器数据拿回来覆盖，防止多端冲突
+        setTimeout(async () => {
+            const latest = await fetchLatestMasteredFromServer();
+            if (latest) {
+                const localMap = loadMasteredMap();
+                Object.assign(localMap, latest);
+                saveMasteredMap(localMap);
+                if (isStudyMode) {
+                    renderStudyList(document.getElementById('studySearch').value || '');
+                }
+            }
+        }, 200);
+    });
 }
 
 // ==================== 题库与练习配置 ====================
@@ -2127,8 +2145,6 @@ function refreshLoginBtns() {
         }
     }
 }
-let syncTimer = null;
-
 async function tryRestoreUserSession() {
     // 注意：这里不再强制清空 currentAdmin，管理员登录态由 DOMContentLoaded 中的一次性通行证统一决定
     const raw = window.localStorage.getItem(USER_SESSION_KEY);
@@ -2153,35 +2169,86 @@ async function tryRestoreUserSession() {
     refreshLoginBtns();
 }
 
-// 新增：跨端静默轮询同步
-function startCrossDeviceSync() {
-    if (syncTimer) clearInterval(syncTimer);
-    syncTimer = setInterval(async () => {
-        if (!currentUser || !currentUser.username) return;
-        // 如果保护仓打开了或者正在弹窗编辑，暂停拉取以防卡顿
-        const modal = document.getElementById('sqlProtectModal'); 
-        if (modal && modal.classList.contains('active')) return;
+// ==================== 真正的极速秒同步引擎 ====================
+let isSyncing = false; // 防并发锁
+let idleCount = 0;     // 记录空闲次数，用于自动降频省电
 
-        const latest = await fetchLatestMasteredFromServer();
-        if (latest) {
-            const localMap = loadMasteredMap();
-            const localUserList = localMap[currentUser.username] || [];
-            const remoteUserList = latest[currentUser.username] || [];
+function startCrossDeviceSync() {
+    if (syncTimer) clearTimeout(syncTimer);
+    
+    const doSync = async () => {
+        if (!currentUser || !currentUser.username || isSyncing) return;
+        
+        // 弹窗编辑或练习中暂停拉取，防止抢占焦点卡顿
+        const modal = document.getElementById('practiceModal'); 
+        if (modal && modal.classList.contains('active')) {
+            syncTimer = setTimeout(doSync, 1000);
+            return;
+        }
+
+        isSyncing = true;
+        let changed = false;
+
+        try {
+            // 限制必须在 1000 毫秒内响应，否则放弃本次（防卡死）
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 1000);
             
-            // 比对当前用户的已会列表，如果有差异才更新
-            const localStr = JSON.stringify(localUserList.sort());
-            const remoteStr = JSON.stringify(remoteUserList.sort());
+            const resp = await fetch(API_BASE + '/api/get-all-data?t=' + Date.now(), { 
+                cache: 'no-store',
+                signal: controller.signal
+            });
+            clearTimeout(timeoutId);
             
-            if (localStr !== remoteStr) {
-                console.log('🔄 检测到其他设备已更新「已会」状态，后台同步中...');
-                Object.assign(localMap, latest);
-                saveMasteredMap(localMap);
-                if (isStudyMode) {
-                    renderStudyList(document.getElementById('studySearch').value || '');
+            if (resp.ok) {
+                const json = await resp.json();
+                if (json.success && json.data && json.data[MASTERED_KEY]) {
+                    let remote = json.data[MASTERED_KEY];
+                    try { remote = typeof remote === 'string' ? JSON.parse(remote) : remote; } catch (e) {}
+                    
+                    const localMap = loadMasteredMap();
+                    const localUserList = localMap[currentUser.username] || [];
+                    const remoteUserList = remote[currentUser.username] || [];
+                    
+                    // 对比本地和目标，有任何差异就更新
+                    const localStr = JSON.stringify(localUserList.slice().sort());
+                    const remoteStr = JSON.stringify(remoteUserList.slice().sort());
+                    
+                    if (localStr !== remoteStr) {
+                        changed = true;
+                        Object.assign(localMap, remote);
+                        saveMasteredMap(localMap);
+                        if (isStudyMode) {
+                            renderStudyList(document.getElementById('studySearch').value || '');
+                        }
+                    }
                 }
             }
+        } catch (e) {
+            // 静默忽略网络失败
+        } finally {
+            isSyncing = false;
         }
-    }, 5000); // 每 5 秒拉取一次极小数据，功耗极低，实现秒同步
+
+        // 动态调整频率：有变化或用户活跃时，保持 1 秒超高频轮询
+        if (changed) {
+            idleCount = 0;
+            syncTimer = setTimeout(doSync, 1000);
+        } else {
+            idleCount++;
+            // 连续 15 秒无变化降频到 2.5 秒，一旦点击立刻恢复 1 秒
+            const nextDelay = idleCount > 15 ? 2500 : 1000;
+            syncTimer = setTimeout(doSync, nextDelay);
+        }
+    };
+
+    // 监听全局点击事件，用户一旦在操作，立刻进入爆发式监听
+    document.body.addEventListener('click', () => {
+        idleCount = 0; 
+    });
+
+    // 立即启动第一轮
+    doSync();
 }
 
 // ==================== 预览与代码生成 ====================
