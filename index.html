@@ -681,14 +681,23 @@ function sendToServer(key, data) {
 
 async function initSQLData() {
     try {
-        const resp = await fetch(API_BASE + '/api/get-all-data');
+        // 加入超时机制，最多只等 3 秒，超时直接放弃，保护用户体验
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 3000);
+        
+        const resp = await fetch(API_BASE + '/api/get-all-data?t=' + Date.now(), { 
+            cache: 'no-store',
+            signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+        
         const json = await resp.json();
         if (json.success && Object.keys(json.data).length > 0) {
             window._SQL_CACHE = json.data;
-            console.log('✅ 独立系统从 SQL 加载数据');
+            console.log('✅ 独立系统从 SQL 加载数据成功');
         }
     } catch (e) {
-        console.warn('❌ SQL 连接失败，使用本地缓存', e);
+        console.warn('⚠️ SQL 连接超时或失败，继续使用本地缓存', e);
     }
 }
 
@@ -2332,23 +2341,39 @@ on('practiceForceSubmitBtn', 'click', async function () {
     finishPractice();
 });
 
-    // ---------- 初始化数据（优化加载速度） ----------
-const isSkipSQLInit = sessionStorage.getItem('SKIP_SQL_INIT') === 'true';
-if (isSkipSQLInit) {
-    // 如果是从“保存并上传”跳转过来的，直接使用本地缓存秒开，因为刚刚上传的数据就是最新的
-    sessionStorage.removeItem('SKIP_SQL_INIT');
-    console.log('⚡ 检测到刚刚保存，已跳过云端加载，直接使用本地缓存');
-    // 强行将 _SQL_CACHE 置空，让 loadBank 走 localStorage 读取最新刚刚保存的内容
-    window._SQL_CACHE = {}; 
-} else {
-    // 正常打开页面，拉取云端数据
-    try { await initSQLData(); } catch (e) { console.warn('initSQLData 失败', e); }
-}
-
+// ---------- 初始化数据（极致秒开优化版） ----------
+// 1. 优先加载本地缓存，无视网络，瞬间渲染页面！
 try { loadBank(); } catch (e) { console.warn('loadBank 失败', e); questionBank = defaultBank.map(x => ({ ...x })); }
 try { refreshLoginBtns(); } catch (e) { }
 try { tryRestoreUserSession(); } catch (e) { }
 try { renderStudyList(''); } catch (e) { console.warn('renderStudyList 失败', e); }
+console.log('⚡ 本地界面极速渲染完毕');
+
+// 2. 页面渲染完毕后，后台默默去同步云端数据
+const isSkipSQLInit = sessionStorage.getItem('SKIP_SQL_INIT') === 'true';
+if (isSkipSQLInit) {
+    sessionStorage.removeItem('SKIP_SQL_INIT');
+    console.log('⚡ 刚保存过，无需拉取云端');
+} else {
+    // 后台静默拉取，不阻塞任何界面
+    initSQLData().then(() => {
+        if (window._SQL_CACHE && Object.keys(window._SQL_CACHE).length > 0) {
+            const oldBankStr = JSON.stringify(questionBank);
+            // 重新解析云端的最新题库
+            loadBank();
+            const newBankStr = JSON.stringify(questionBank);
+            
+            // 如果云端数据与本地不同，说明云端有更新，静默刷新界面
+            if (oldBankStr !== newBankStr) {
+                console.log('🔄 发现云端题库有更新，后台静默同步中...');
+                renderStudyList((document.getElementById('studySearch') || {}).value || '');
+                if (document.getElementById('bankModal') && document.getElementById('bankModal').classList.contains('active')) {
+                    renderBankList('');
+                }
+            }
+        }
+    }).catch(e => console.warn('后台同步云端失败', e));
+}
 
     // ---------- 学习区 ----------
     on('studySearch', 'input', function (e) { renderStudyList(e.target.value); });
