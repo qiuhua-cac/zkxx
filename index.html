@@ -1094,11 +1094,24 @@ async function loadMasteredFromCloud() {
         }
     } catch (e) { }
 }
-// 全局广播通道
-const syncChannel = new BroadcastChannel('zk_mastered_sync');
+// ==================== 终极秒同步机制（数据随广播下发） ====================
+
+// 监听本地跨标签页 / 跨浏览器更新
+window.addEventListener('storage', (e) => {
+    if (e.key === MASTERED_KEY && currentUser && currentUser.username) {
+        if (isStudyMode) renderStudyList(document.getElementById('studySearch').value || '');
+    }
+});
+
+// 监听 BroadcastChannel 广播
+const syncChannel = new BroadcastChannel('zk_mastered_sync_final');
 syncChannel.onmessage = (event) => {
-    if (event.data === 'refresh' && currentUser && currentUser.username) {
-        // 收到广播后，立刻刷新本地缓存并重绘
+    if (event.data && event.data.type === 'update_mastered' && currentUser && currentUser.username) {
+        // 瞬间把别人刚点的数据塞入本地
+        const remoteMap = event.data.map;
+        const localMap = loadMasteredMap();
+        Object.assign(localMap, remoteMap);
+        saveMasteredMap(localMap);
         if (isStudyMode) renderStudyList(document.getElementById('studySearch').value || '');
     }
 };
@@ -1109,6 +1122,7 @@ async function onToggleMastered(questionText, btnEl) {
         setTimeout(() => { openLoginModal(); }, 400);
         return;
     }
+    
     const list = getMasteredListForCurrentUser();
     const idx = list.indexOf(questionText);
     const willAdd = idx === -1;
@@ -1122,11 +1136,22 @@ async function onToggleMastered(questionText, btnEl) {
     showToast(willAdd ? '✅ 已标记为已会' : '已取消已会');
     if (isStudyMode) renderStudyList(document.getElementById('studySearch').value || '');
 
-    // 1. 广播给同设备其他浏览器标签页（瞬间同步，0延迟）
-    syncChannel.postMessage('refresh');
+    // 获取全量最新数据
+    const latestMap = loadMasteredMap();
 
-    // 2. 发给服务器（触发长轮询返回，让其他手机立即更新）
-    await sendToServer(MASTERED_KEY, loadMasteredMap());
+    // 1. 同设备、同浏览器多标签瞬间广播（0ms 延迟）
+    syncChannel.postMessage({ type: 'update_mastered', map: latestMap });
+    
+    // 触发 LocalStorage 变更事件（兼容旧版浏览器跨标签页同步）
+    // （由于 saveMasteredMap 已经写入 localStorage，同设备其它页面其实会通过上面的 'storage' 事件收到更新）
+
+    // 2. 发往服务器，让其他手机在后台默默通过定时器获取
+    // 后台 POST 完就不管了，完全不影响当前点击体验
+    fetch(API_BASE + '/api/save-data', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ [MASTERED_KEY]: latestMap })
+    }).catch(e => console.warn('后台同步失败，不影响本地'));
 }
 
 // ==================== 题库与练习配置 ====================
