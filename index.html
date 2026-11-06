@@ -2250,7 +2250,7 @@ function startCrossDeviceSync() {
         }
 
         // ★ 核心改造：请求一完成，哪怕只过了10毫秒，立刻发下一次！无间隙！真正的极速。
-        syncTimer = setTimeout(doSync, 50); 
+        syncTimer = setTimeout(doSync, 2000); 
     };
 
     doSync();
