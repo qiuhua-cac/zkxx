@@ -2172,7 +2172,8 @@ function refreshLoginBtns() {
 }
 async function tryRestoreUserSession() {
     // 注意：这里不再强制清空 currentAdmin，管理员登录态由 DOMContentLoaded 中的一次性通行证统一决定
-    const raw = window.localStorage.getItem(USER_SESSION_KEY);
+    let raw = null;
+    try { raw = window.localStorage.getItem(USER_SESSION_KEY); } catch(e) {}
     if (raw && raw !== 'null' && raw !== 'undefined') {
         try {
             const obj = JSON.parse(raw);
@@ -2196,6 +2197,7 @@ async function tryRestoreUserSession() {
 
 // ==================== 极速长轮询同步引擎 ====================
 let isSyncing = false;
+let syncTimer = null; // ★ 修复：补回缺失的变量声明
 
 function startCrossDeviceSync() {
     if (syncTimer) clearTimeout(syncTimer);
