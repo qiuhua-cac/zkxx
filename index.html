@@ -1094,6 +1094,15 @@ async function loadMasteredFromCloud() {
         }
     } catch (e) { }
 }
+// 全局广播通道
+const syncChannel = new BroadcastChannel('zk_mastered_sync');
+syncChannel.onmessage = (event) => {
+    if (event.data === 'refresh' && currentUser && currentUser.username) {
+        // 收到广播后，立刻刷新本地缓存并重绘
+        if (isStudyMode) renderStudyList(document.getElementById('studySearch').value || '');
+    }
+};
+
 async function onToggleMastered(questionText, btnEl) {
     if (!currentUser || !currentUser.username) {
         showToast('请先登录普通账号后再标记「已会」');
@@ -1105,6 +1114,7 @@ async function onToggleMastered(questionText, btnEl) {
     const willAdd = idx === -1;
     if (willAdd) list.push(questionText); else list.splice(idx, 1);
     saveMasteredListForCurrentUser(list);
+    
     if (btnEl) {
         btnEl.classList.toggle('active', willAdd);
         const card = btnEl.closest('.study-card'); if (card) card.classList.toggle('mastered', willAdd);
@@ -1112,21 +1122,11 @@ async function onToggleMastered(questionText, btnEl) {
     showToast(willAdd ? '✅ 已标记为已会' : '已取消已会');
     if (isStudyMode) renderStudyList(document.getElementById('studySearch').value || '');
 
-    // 核心：强制推送并立即拉取一次，确保本地状态和服务器绝对一致
-    await syncMasteredToCloud().then(async () => {
-        // 延迟 200ms 后在后台强制把服务器数据拿回来覆盖，防止多端冲突
-        setTimeout(async () => {
-            const latest = await fetchLatestMasteredFromServer();
-            if (latest) {
-                const localMap = loadMasteredMap();
-                Object.assign(localMap, latest);
-                saveMasteredMap(localMap);
-                if (isStudyMode) {
-                    renderStudyList(document.getElementById('studySearch').value || '');
-                }
-            }
-        }, 200);
-    });
+    // 1. 广播给同设备其他浏览器标签页（瞬间同步，0延迟）
+    syncChannel.postMessage('refresh');
+
+    // 2. 发给服务器（触发长轮询返回，让其他手机立即更新）
+    await sendToServer(MASTERED_KEY, loadMasteredMap());
 }
 
 // ==================== 题库与练习配置 ====================
@@ -2169,9 +2169,8 @@ async function tryRestoreUserSession() {
     refreshLoginBtns();
 }
 
-// ==================== 真正的极速秒同步引擎 ====================
-let isSyncing = false; // 防并发锁
-let idleCount = 0;     // 记录空闲次数，用于自动降频省电
+// ==================== 极速长轮询同步引擎 ====================
+let isSyncing = false;
 
 function startCrossDeviceSync() {
     if (syncTimer) clearTimeout(syncTimer);
@@ -2179,26 +2178,19 @@ function startCrossDeviceSync() {
     const doSync = async () => {
         if (!currentUser || !currentUser.username || isSyncing) return;
         
-        // 弹窗编辑或练习中暂停拉取，防止抢占焦点卡顿
         const modal = document.getElementById('practiceModal'); 
         if (modal && modal.classList.contains('active')) {
-            syncTimer = setTimeout(doSync, 1000);
+            syncTimer = setTimeout(doSync, 2000);
             return;
         }
 
         isSyncing = true;
-        let changed = false;
 
         try {
-            // 限制必须在 1000 毫秒内响应，否则放弃本次（防卡死）
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 1000);
-            
+            // ★ 核心改造：不主动加超时，依靠浏览器默认行为（一般60秒）或服务器返回。长轮询！
             const resp = await fetch(API_BASE + '/api/get-all-data?t=' + Date.now(), { 
-                cache: 'no-store',
-                signal: controller.signal
+                cache: 'no-store'
             });
-            clearTimeout(timeoutId);
             
             if (resp.ok) {
                 const json = await resp.json();
@@ -2210,44 +2202,30 @@ function startCrossDeviceSync() {
                     const localUserList = localMap[currentUser.username] || [];
                     const remoteUserList = remote[currentUser.username] || [];
                     
-                    // 对比本地和目标，有任何差异就更新
                     const localStr = JSON.stringify(localUserList.slice().sort());
                     const remoteStr = JSON.stringify(remoteUserList.slice().sort());
                     
                     if (localStr !== remoteStr) {
-                        changed = true;
                         Object.assign(localMap, remote);
                         saveMasteredMap(localMap);
                         if (isStudyMode) {
                             renderStudyList(document.getElementById('studySearch').value || '');
+                            // 给个轻微提示，让用户知道其它端操作了
+                            showToast('🔄 其它端已会状态已同步'); 
                         }
                     }
                 }
             }
         } catch (e) {
-            // 静默忽略网络失败
+            // 静默
         } finally {
             isSyncing = false;
         }
 
-        // 动态调整频率：有变化或用户活跃时，保持 1 秒超高频轮询
-        if (changed) {
-            idleCount = 0;
-            syncTimer = setTimeout(doSync, 1000);
-        } else {
-            idleCount++;
-            // 连续 15 秒无变化降频到 2.5 秒，一旦点击立刻恢复 1 秒
-            const nextDelay = idleCount > 15 ? 2500 : 1000;
-            syncTimer = setTimeout(doSync, nextDelay);
-        }
+        // ★ 核心改造：请求一完成，哪怕只过了10毫秒，立刻发下一次！无间隙！真正的极速。
+        syncTimer = setTimeout(doSync, 50); 
     };
 
-    // 监听全局点击事件，用户一旦在操作，立刻进入爆发式监听
-    document.body.addEventListener('click', () => {
-        idleCount = 0; 
-    });
-
-    // 立即启动第一轮
     doSync();
 }
 
