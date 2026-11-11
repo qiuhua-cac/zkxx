@@ -2213,13 +2213,18 @@ function startCrossDeviceSync() {
 
         isSyncing = true;
 
-        try {
-            // ★ 核心改造：不主动加超时，依靠浏览器默认行为（一般60秒）或服务器返回。长轮询！
-            const resp = await fetch(API_BASE + '/api/get-all-data?t=' + Date.now(), { 
-                cache: 'no-store'
-            });
-            
-            if (resp.ok) {
+try {
+    // ★ 核心改造：加上 3 秒超时，绝对不傻等！
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 3000);
+    
+    const resp = await fetch(API_BASE + '/api/get-all-data?t=' + Date.now(), { 
+        cache: 'no-store',
+        signal: controller.signal
+    });
+    clearTimeout(timeoutId);
+    
+    if (resp.ok) {
                 const json = await resp.json();
                 if (json.success && json.data && json.data[MASTERED_KEY]) {
                     let remote = json.data[MASTERED_KEY];
@@ -2244,14 +2249,17 @@ function startCrossDeviceSync() {
                 }
             }
         } catch (e) {
-            // 静默
-        } finally {
-            isSyncing = false;
+        // 如果是超时，给个轻微提示（可选）
+        if (e.name === 'AbortError') {
+            console.log('⏱️ 请求超时，3秒后极速重试');
         }
+    } finally {
+        isSyncing = false;
+    }
 
-        // ★ 核心改造：请求一完成，哪怕只过了10毫秒，立刻发下一次！无间隙！真正的极速。
-        syncTimer = setTimeout(doSync, 2000); 
-    };
+    // ★ 核心改造：请求完成或失败后，暂停 2 秒立刻发下一次！保证不卡死
+    syncTimer = setTimeout(doSync, 2000); 
+};
 
     doSync();
 }
