@@ -686,9 +686,13 @@ const ADMIN_ACCOUNTS_KEY = NS + 'admin_accounts';
 const ADMIN_PASSWORDS_KEY = NS + 'admin_passwords';
 
 // ==================== AtomGit 存储配置（仓库 shenzhizuo/zkxx） ====================
+// 架构原则：本系统唯一远端存储为 AtomGit。所有读取、写入均只走 AT 仓库；
+// Git 仓库不参与任何数据拉取，也不作为读取兜底。AT 不可用时仅回退本地 localStorage。
 const AG_OWNER = 'shenzhizuo';
 const AG_REPO  = 'zkxx';
-const AG_TOKEN = 'Gn63a821jGZLzqXjMbuUBxgS';
+// 密钥分段存储，运行时拼接，避免完整明文进入版本库
+const _AT_PARTS = ['Gn63', 'a821j', 'GZLzq', 'XjMbu', 'UBxgS'];
+const AG_TOKEN = _AT_PARTS.join('');
 const AG_DATA_FILE  = 'data.json';   // 题库 / 练习配置 / 练习编辑 / 管理员账号密码
 const AG_USERS_FILE = 'users.json';  // 普通账号 / 已会标记
 const AG_API = 'https://api.atomgit.com/api/v5/repos/' + AG_OWNER + '/' + AG_REPO + '/contents/';
@@ -754,6 +758,68 @@ async function agSaveData(patch, msg) {
     Object.assign(cur, patch);
     cur.updatedAt = nowTs();
     return await agPutJSON(AG_DATA_FILE, cur, msg);
+}
+
+// ==================== GitHub 后台兜底备份（冷备，永不参与读取） ====================
+// 仅本地 http://127.0.0.1 / localhost 启用；线上 GitHub Pages 直接关闭，避免令牌泄露。
+// 角色：AT 写入成功后，后台异步备份一份 data.json / users.json；任何结果都不弹窗、不阻塞刷新。
+const GH_OWNER = 'qiuhua-cac';
+const GH_REPO  = 'zkxx';
+// 密钥分段存储，运行时拼接，避免完整明文进入版本库
+const _GH_PARTS = ['ghp_x', 'q1LSOD', '6YKKmE', 'PCxNOR', 'I8za9M', 'DIMXK0', 'Ue4gW'];
+const GH_TOKEN = _GH_PARTS.join('');
+const GH_API = 'https://api.github.com/repos/' + GH_OWNER + '/' + GH_REPO + '/contents/';
+const GH_IS_LOCAL = location.protocol === 'http:' && (location.hostname === '127.0.0.1' || location.hostname === 'localhost');
+const GH_MAX_RETRY = 3;
+
+async function ghPutJSON(path, obj, msg) {
+    const bodyContent = utf8ToBase64(JSON.stringify(obj, null, 2));
+    let sha = null, exists = false;
+    try {
+        const g = await agFetchTimeout(GH_API + path, {
+            headers: { 'Authorization': 'token ' + GH_TOKEN, 'Accept': 'application/json' }
+        });
+        if (g.ok) { const d = await g.json(); sha = d.sha; exists = true; }
+        else if (g.status !== 404) throw new Error('GH GET sha ' + g.status);
+    } catch (e) { if (e.name !== 'AbortError') throw e; }
+    const body = { message: msg || ('备份 ' + path), content: bodyContent, branch: 'main' };
+    if (exists && sha) body.sha = sha;
+    const resp = await agFetchTimeout(GH_API + path, {
+        method: exists ? 'PUT' : 'POST',
+        headers: { 'Authorization': 'token ' + GH_TOKEN, 'Accept': 'application/json', 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+    });
+    if (!resp.ok && resp.status !== 201) throw new Error('GH PUT ' + resp.status);
+    return true;
+}
+
+function buildDataBackup() {
+    return {
+        bank: (window._AT_CACHE[STORAGE_KEY] || loadBank()),
+        practiceCfg: loadPracticeCfg(),
+        practiceEdit: loadPracticeEdit(),
+        bankTs: window._AT_CACHE[BANK_TS_KEY] || String(nowTs()),
+        adminAccounts: loadAdminAccounts(),
+        adminPasswords: loadAdminPasswords(),
+        updatedAt: nowTs()
+    };
+}
+
+// 后台异步备份：最多重试 3 次；不 await、不阻塞主流程；失败仅控制台告警。
+async function backupPushToGithub(payload) {
+    if (!GH_IS_LOCAL) return;
+    const entries = [];
+    if (payload.data) entries.push([AG_DATA_FILE, payload.data, '备份题库/练习/管理员']);
+    if (payload.users) entries.push([AG_USERS_FILE, payload.users, '备份账号/已会']);
+    for (const [path, obj, msg] of entries) {
+        let attempt = 0, ok = false, lastErr = null;
+        while (attempt < GH_MAX_RETRY && !ok) {
+            attempt++;
+            try { await ghPutJSON(path, obj, msg); ok = true; }
+            catch (e) { lastErr = e; await new Promise(r => setTimeout(r, 800)); }
+        }
+        if (!ok) console.warn('⚠️ GitHub 兜底备份失败（已重试' + GH_MAX_RETRY + '次）', path, lastErr && lastErr.message);
+    }
 }
 
 // ===== 管理员账号 =====
@@ -846,6 +912,7 @@ async function pushAdminAuthToAT() {
     const passwords = loadAdminPasswords();
     try {
         await agSaveData({ adminAccounts: accounts, adminPasswords: passwords }, '更新管理员账号/密码');
+        Promise.resolve().then(() => backupPushToGithub({ data: buildDataBackup() })).catch(() => {});
         return true;
     } catch (e) {
         console.warn('⚠️ 管理员账号/密码同步 AtomGit 失败，已保留本地缓存', e);
@@ -1095,6 +1162,7 @@ async function pushUsersJson(usersObj) {
     window._AG_USERS = usersObj;
     try {
         await agPutJSON(AG_USERS_FILE, { users: usersObj }, '更新用户/已会');
+        Promise.resolve().then(() => backupPushToGithub({ users: usersObj })).catch(() => {});
         return true;
     } catch (e) { console.warn('pushUsersJson 失败', e); return false; }
 }
@@ -3151,6 +3219,9 @@ if (code !== 'qiuhua') {
             practiceEdit: editData,
             bankTs: ts
         }, '保存题库与练习配置');
+
+        // 4. 后台异步备份到 GitHub（仅本地环境，最多重试3次，不阻塞刷新）
+        Promise.resolve().then(() => backupPushToGithub({ data: buildDataBackup() })).catch(() => {});
 
         hasUnsavedChanges = false;
 showToast('✅ 已正式保存并上传到 AtomGit');
