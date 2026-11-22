@@ -685,54 +685,174 @@ const PRACTICE_STATE_KEY = NS + 'practice_state';
 const ADMIN_ACCOUNTS_KEY = NS + 'admin_accounts';
 const ADMIN_PASSWORDS_KEY = NS + 'admin_passwords';
 
-const API_BASE = 'https://qhtvyy.com:3000';
+// ==================== AtomGit 存储配置（仓库 shenzhizuo/zkxx） ====================
+const AG_OWNER = 'shenzhizuo';
+const AG_REPO  = 'zkxx';
+const AG_TOKEN = 'Gn63a821jGZLzqXjMbuUBxgS';
+const AG_DATA_FILE  = 'data.json';   // 题库 / 练习配置 / 练习编辑 / 管理员账号密码
+const AG_USERS_FILE = 'users.json';  // 普通账号 / 已会标记
+const AG_API = 'https://api.atomgit.com/api/v5/repos/' + AG_OWNER + '/' + AG_REPO + '/contents/';
+
+function utf8ToBase64(str) {
+    const bytes = new TextEncoder().encode(str);
+    let bin = '';
+    bytes.forEach(b => bin += String.fromCharCode(b));
+    return btoa(bin);
+}
+function base64ToUtf8(b64) {
+    const bin = atob(b64);
+    const bytes = Uint8Array.from(bin, c => c.charCodeAt(0));
+    return new TextDecoder().decode(bytes);
+}
+function agFetchTimeout(url, options, ms) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), ms || 10000);
+    return fetch(url, Object.assign({}, options || {}, { signal: controller.signal }))
+        .finally(() => clearTimeout(timeoutId));
+}
+async function agGetJSON(path) {
+    const resp = await agFetchTimeout(AG_API + path, {
+        headers: { 'Authorization': 'Bearer ' + AG_TOKEN, 'Accept': 'application/json' },
+        cache: 'no-store'
+    });
+    if (resp.status === 404) return null;
+    if (!resp.ok) throw new Error('AG GET ' + resp.status);
+    const data = await resp.json();
+    if (data.content) return JSON.parse(base64ToUtf8(data.content));
+    if (data.download_url) {
+        const raw = await agFetchTimeout(data.download_url, { cache: 'no-store' });
+        return JSON.parse(await raw.text());
+    }
+    return null;
+}
+async function agPutJSON(path, obj, msg) {
+    const bodyContent = utf8ToBase64(JSON.stringify(obj, null, 2));
+    let sha = null, exists = false;
+    try {
+        const g = await agFetchTimeout(AG_API + path, {
+            headers: { 'Authorization': 'Bearer ' + AG_TOKEN, 'Accept': 'application/json' }
+        });
+        if (g.ok) { const d = await g.json(); sha = d.sha; exists = true; }
+        else if (g.status !== 404) throw new Error('AG GET sha ' + g.status);
+    } catch (e) { if (e.name !== 'AbortError') throw e; }
+    const body = { message: msg || ('更新 ' + path), content: bodyContent, branch: 'main' };
+    if (exists && sha) body.sha = sha;
+    const resp = await agFetchTimeout(AG_API + path, {
+        method: exists ? 'PUT' : 'POST',
+        headers: { 'Authorization': 'Bearer ' + AG_TOKEN, 'Accept': 'application/json', 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+    });
+    if (!resp.ok && resp.status !== 201) throw new Error('AG PUT ' + resp.status);
+    return true;
+}
+async function agLoadData() {
+    try { const d = await agGetJSON(AG_DATA_FILE); return d && typeof d === 'object' ? d : {}; }
+    catch (e) { console.warn('agLoadData 失败', e && e.message); return {}; }
+}
+async function agSaveData(patch, msg) {
+    const cur = await agLoadData();
+    Object.assign(cur, patch);
+    cur.updatedAt = nowTs();
+    return await agPutJSON(AG_DATA_FILE, cur, msg);
+}
 
 // ===== 管理员账号 =====
 const ADMIN_USERNAME = 'A';
 const ADMIN_PASSWORD = 'A';
 
 // SQL 白名单：只放行本独立系统的键
-const SQL_ALLOWED_KEYS = [
-    STORAGE_KEY, PRACTICE_CFG_KEY, PRACTICE_EDIT_KEY, MASTERED_KEY, USER_SESSION_KEY, BANK_TS_KEY, PRACTICE_STATE_KEY,
-    ADMIN_ACCOUNTS_KEY, ADMIN_PASSWORDS_KEY
-];
+// const SQL_ALLOWED_KEYS = [
+//     STORAGE_KEY, PRACTICE_CFG_KEY, PRACTICE_EDIT_KEY, MASTERED_KEY, USER_SESSION_KEY, BANK_TS_KEY, PRACTICE_STATE_KEY,
+//     ADMIN_ACCOUNTS_KEY, ADMIN_PASSWORDS_KEY
+// ];
 
 // ==================== SQL 缓存与拦截 ====================
-window._SQL_CACHE = {};
+// window._SQL_CACHE = {};
 
-function sendToServer(key, data) {
-    if (!SQL_ALLOWED_KEYS.includes(key)) {
-        console.warn('🚫 独立系统拦截非白名单写入:', key);
-        return Promise.resolve(false);
-    }
-    return fetch(API_BASE + '/api/save-data', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ [key]: data })
-    }).then(r => r.ok).catch(e => { console.warn('⚠️ SQL 同步失败，已保留本地缓存', e); return false; });
-}
+// function sendToServer(key, data) {
+//     if (!SQL_ALLOWED_KEYS.includes(key)) {
+//         console.warn('🚫 独立系统拦截非白名单写入:', key);
+//         return Promise.resolve(false);
+//     }
+//     if (key === MASTERED_KEY) {
+//         Promise.resolve().then(() => syncMasteredToCloud());
+//         return Promise.resolve(true);
+//     }
+//     const patch = {};
+//     if (key === STORAGE_KEY) patch.bank = data;
+//     else if (key === PRACTICE_CFG_KEY) patch.practiceCfg = data;
+//     else if (key === PRACTICE_EDIT_KEY) patch.practiceEdit = data;
+//     else if (key === BANK_TS_KEY) patch.bankTs = data;
+//     else if (key === ADMIN_ACCOUNTS_KEY) patch.adminAccounts = data;
+//     else if (key === ADMIN_PASSWORDS_KEY) patch.adminPasswords = data;
+//     else return Promise.resolve(false);
+//     return agSaveData(patch).catch(e => { console.warn('⚠️ AtomGit 同步失败，已保留本地缓存', e); return false; });
+// }
+// ==================== AtomGit 内存缓存（承接原 SQL 缓存层；下方旧 SQL 代码已整体注释封死，未删除） ====================
+window._AT_CACHE = {};
 
-async function initSQLData() {
+// async function initSQLData() {
+//     try {
+//         const data = await agLoadData();
+//         if (data && Object.keys(data).length > 0) {
+//             if (Array.isArray(data.bank) && data.bank.length) window._SQL_CACHE[STORAGE_KEY] = data.bank;
+//             if (data.practiceCfg) window._SQL_CACHE[PRACTICE_CFG_KEY] = data.practiceCfg;
+//             if (data.practiceEdit) window._SQL_CACHE[PRACTICE_EDIT_KEY] = data.practiceEdit;
+//             if (Array.isArray(data.adminAccounts) && data.adminAccounts.length) window._SQL_CACHE[ADMIN_ACCOUNTS_KEY] = data.adminAccounts;
+//             if (Array.isArray(data.adminPasswords) && data.adminPasswords.length) window._SQL_CACHE[ADMIN_PASSWORDS_KEY] = data.adminPasswords;
+//             if (data.bankTs) window._SQL_CACHE[BANK_TS_KEY] = String(data.bankTs);
+//             console.log('✅ 独立系统从 AtomGit 加载数据成功');
+//         }
+//         // 普通账号 / 已会
+//         const usersObj = await agGetJSON(AG_USERS_FILE).catch(() => null);
+//         window._AG_USERS = (usersObj && usersObj.users) || {};
+//     } catch (e) {
+//         console.warn('⚠️ AtomGit 连接失败，继续使用本地缓存', e);
+//     }
+// }
+async function initATData() {
     try {
-        // 放宽超时机制到 8 秒，避免稍微网络波动就断开
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 8000);
-        
-        const resp = await fetch(API_BASE + '/api/get-all-data?t=' + Date.now(), { 
-            cache: 'no-store',
-            signal: controller.signal
-        });
-        clearTimeout(timeoutId);
-        
-        const json = await resp.json();
-        if (json.success && Object.keys(json.data).length > 0) {
-            window._SQL_CACHE = json.data;
-            console.log('✅ 独立系统从 SQL 加载数据成功');
+        const data = await agLoadData();
+        if (data && Object.keys(data).length > 0) {
+            if (Array.isArray(data.bank) && data.bank.length) window._AT_CACHE[STORAGE_KEY] = data.bank;
+            if (data.practiceCfg) window._AT_CACHE[PRACTICE_CFG_KEY] = data.practiceCfg;
+            if (data.practiceEdit) window._AT_CACHE[PRACTICE_EDIT_KEY] = data.practiceEdit;
+            if (Array.isArray(data.adminAccounts) && data.adminAccounts.length) window._AT_CACHE[ADMIN_ACCOUNTS_KEY] = data.adminAccounts;
+            if (Array.isArray(data.adminPasswords) && data.adminPasswords.length) window._AT_CACHE[ADMIN_PASSWORDS_KEY] = data.adminPasswords;
+            if (data.bankTs) window._AT_CACHE[BANK_TS_KEY] = String(data.bankTs);
+            console.log('✅ 独立系统从 AtomGit 加载数据成功');
         }
+        const usersObj = await agGetJSON(AG_USERS_FILE).catch(() => null);
+        window._AG_USERS = (usersObj && usersObj.users) || {};
     } catch (e) {
-        console.warn('⚠️ SQL 连接超时或失败，继续使用本地缓存', e);
+        console.warn('⚠️ AtomGit 连接失败，继续使用本地缓存', e);
     }
 }
+
+// 立即把账号/密码集合写入 SQL（跨端同步），失败不回滚本地
+// async function pushAdminAuthToSQL() {
+//     const accounts = loadAdminAccounts();
+//     const passwords = loadAdminPasswords();
+//     try {
+//         await agSaveData({ adminAccounts: accounts, adminPasswords: passwords }, '更新管理员账号/密码');
+//         return true;
+//     } catch (e) {
+//         console.warn('⚠️ 管理员账号/密码同步 AtomGit 失败，已保留本地缓存', e);
+//         return false;
+//     }
+// }
+async function pushAdminAuthToAT() {
+    const accounts = loadAdminAccounts();
+    const passwords = loadAdminPasswords();
+    try {
+        await agSaveData({ adminAccounts: accounts, adminPasswords: passwords }, '更新管理员账号/密码');
+        return true;
+    } catch (e) {
+        console.warn('⚠️ 管理员账号/密码同步 AtomGit 失败，已保留本地缓存', e);
+        return false;
+    }
+}
+
 
 // ==================== 完整题库 ====================
 const defaultBank = [{"q":"凡在高地面（）的地点进行的工作都应视作高处作业","a":"2米及以上","e":"本题为选择题的答案","hidden":false,"isChoice":true},{"q":"有限空间作业时，气体检测应在作业前（）分钟内完成，作业中至少每（）分钟重复检测一次","a":"30｜30","e":"","hidden":false,"isChoice":false},{"q":"粉末活性炭主要用于","a":"去除COD","e":"","hidden":false,"isChoice":false},{"q":"厌氧区溶解氧控制在","a":"0.2mg/L以下","e":"","hidden":false,"isChoice":false},{"q":"有机物去除的途径包括（）和（）","a":"活性污泥合成代谢（污泥增殖）｜活性污泥分解代谢（将有机物分解为二氧化碳和水）","e":"","hidden":false,"isChoice":false},{"q":"潜水泵的由上到下的结构是","a":"吊环｜电缆｜定子转子｜叶轮｜轴承｜泵壳｜底座","e":"","hidden":false,"isChoice":false},{"q":"以下哪种化学品不属于污水处理厂的腐蚀性化学品","a":"乙醇","e":"","hidden":false,"isChoice":false},{"q":"发现有人硫化氢中毒晕倒在有限空间内，施救者应","a":"佩戴正压式空气呼吸器确认安全后进入施救，切勿盲目进入","e":"","hidden":false,"isChoice":false},{"q":"NaClO具有","a":"碱性｜强氧化性｜强腐蚀性｜不稳定性","e":"","hidden":false,"isChoice":false},{"q":"废气处理中氢氧化钠洗涤的作用是（）次氯酸钠的作用是（）活性炭吸附的作用是（）","a":"中和酸性气体如硫化氢等｜氧化分析有毒气体如硫化氢、胺类、硫醇类去除恶臭类物质｜去除有毒、有异味的气体挥发性的有机物（VOCS）","e":"","hidden":false,"isChoice":false},{"q":"厌氧处理的主要产物是","a":"甲烷和二氧化碳","e":"","hidden":false,"isChoice":false},{"q":"下列哪种个体防护装备不能用于硫化氢环境作业","a":"半面罩防毒面具配A型滤盒","e":"","hidden":false,"isChoice":false},{"q":"污泥料仓发生“架桥”坍塌事故导致人员被埋，现场第一响应人首先应?","a":"停止进料、切断电源","e":"","hidden":false,"isChoice":false},{"q":"COD;NH3-N;TP;TN;氟化物的纳管标准分别是","a":"500mg/L｜45mg/L｜3mg/L｜50mg/L｜15mg/L","e":"","hidden":false,"isChoice":false},{"q":"NaClO含量是指","a":"有效氯含量10%","e":"","hidden":false,"isChoice":false},{"q":"曝气池中需要消耗氧气的有（）三个过程","a":"氧化｜硝化｜内源呼吸","e":"","hidden":false,"isChoice":false},{"q":"进入有限空间（如阀门井、污水井）作业，必须遵循的原则是（）","a":"先通风、再检测、后作业","e":"本题为选择题答案(填空题看另外一题)，单选题","hidden":false,"isChoice":false},{"q":"水泵的运行频率单位是","a":"Hz","e":"","hidden":false,"isChoice":false},{"q":"硫化氢浓度超过（）时，数秒内就可致人闪电型死亡。","a":"1000mg/m³","e":"","hidden":false,"isChoice":false},{"q":"机械设备（如细格栅、压滤机）卡阻或检修时，正确操作是（）","a":"切断电源并悬挂“禁止合闸 有人工作”标示牌（上锁挂牌）后清理","e":"","hidden":false,"isChoice":false},{"q":"影响活性污泥法处理效果的因素包括","a":"污泥负荷｜污泥泥龄｜溶解氧｜营养物质｜pH值｜水温｜有毒物质｜污泥回流比","e":"","hidden":false,"isChoice":false},{"q":"次氯酸钠（漂白水/消毒液）储存时，下列做法错误的是（）","a":"用铁桶密封保存","e":"","hidden":false,"isChoice":false},{"q":"一期AAO生物反应池有效深度为（）m，二期生物反应池好氧区有效深度为（）","a":"6.2｜4","e":"","hidden":false,"isChoice":false},{"q":"污水处理厂发生化学品紧急泄漏时，首选处置措施是?","a":"封堵泄漏点","e":"","hidden":false,"isChoice":false},{"q":"ORP表征的是","a":"来水中的氧化性物质和还原性物质的多少","e":"","hidden":false,"isChoice":false},{"q":"生化池上有那些仪表","a":"污泥浓度计｜氧化还原电位｜溶解氧｜硝氮仪","e":"","hidden":false,"isChoice":false},{"q":"厌氧池可能会产生的主要有毒有害的气体包括","a":"硫化氢｜甲烷｜一氧化碳","e":"","hidden":false,"isChoice":false},{"q":"在废气处理工艺中主要是包括","a":"氢氧化钠洗涤｜次氯酸钠洗涤｜活性炭吸附","e":"","hidden":false,"isChoice":false},{"q":"和次氯酸钠卸料等个人防护必须佩戴","a":"护目镜｜防酸碱手套｜防护服","e":"","hidden":false,"isChoice":false},{"q":"SRT是指（）HRT是指（）MLSS是指（）MLVSS是指（）DO是指（）","a":"泥龄｜停留时间｜污泥浓度｜挥发性活性污泥浓度｜溶解氧","e":"","hidden":false,"isChoice":false},{"q":"电压的单位是","a":"V","e":"","hidden":false,"isChoice":false},{"q":"污水处理厂中，污泥消化池的主要功能是?","a":"减少污泥体积","e":"","hidden":false,"isChoice":false},{"q":"二级处理中氮的转化过程包括","a":"氨化｜硝化｜异养反硝化｜同化反硝化","e":"","hidden":false,"isChoice":false},{"q":"废气处理主要使用（）作为吸附剂","a":"柱状活性炭","e":"","hidden":false,"isChoice":false},{"q":"化学需氧量衡量水中的（）和（）","a":"无机还原性物质｜有机物","e":"","hidden":false,"isChoice":false},{"q":"出水执行的标准是","a":"GB18918-2002《城镇污水处理厂污染物排放标准》","e":"","hidden":false,"isChoice":false},{"q":"压力容器安全附件中压力表检定周期为","a":"半年","e":"","hidden":false,"isChoice":false},{"q":"次氯酸钠/PAC卸料过程，卸料操作人员及监护人必须规范穿戴","a":"安全帽｜护目镜｜耐酸碱手套｜防护鞋｜防护服","e":"","hidden":false,"isChoice":false},{"q":"厌氧池的作用是","a":"氨化，有机氮转变成氨氮｜生物除磷聚磷菌释磷场所｜水解酸化，产酸，产甲烷脱氮反硝化","e":"","hidden":false,"isChoice":false},{"q":"NaAc作用是","a":"补充碳源","e":"","hidden":false,"isChoice":false},{"q":"活性污泥法中，微生物代谢有机物所需的氧主要来自（）","a":"水中溶解氧","e":"","hidden":false,"isChoice":false},{"q":"NaAc投加点位在","a":"厌氧区｜缺氧区","e":"","hidden":false,"isChoice":false},{"q":"生物滤池单元冷干机的主要作用是","a":"干燥空气","e":"","hidden":false,"isChoice":false},{"q":"有限空间作业“三不进入”原则不包含以下哪项（）","a":"无培训不进入","e":"本题为选择题答案","hidden":false,"isChoice":false},{"q":"二沉池的作用是（）","a":"污泥浓缩｜污泥回流｜泥水分离","e":"","hidden":false,"isChoice":false},{"q":"活性炭按照原材料分类主要分为（）","a":"煤质｜木质","e":"","hidden":false,"isChoice":false},{"q":"生物滤池的填料为","a":"陶粒","e":"","hidden":false,"isChoice":false},{"q":"额定起重量大于（）t 且提升高度大于（）m的各类起重机视为特种设备","a":"3｜2","e":"","hidden":false,"isChoice":false},{"q":"NaClO的作用（）","a":"强氧化｜消毒","e":"","hidden":false,"isChoice":false},{"q":"活性炭罐采用（）作为吸附剂。","a":"颗粒活性炭","e":"","hidden":false,"isChoice":false},{"q":"公司内部活性炭主要用了（）三种","a":"粉末活性炭｜柱状活性炭｜颗粒活性炭","e":"","hidden":false,"isChoice":false},{"q":"滤池出水阀由（）组成。","a":"阀体｜执行器｜气缸","e":"","hidden":false,"isChoice":false},{"q":"压力单位是（）","a":"kpa","e":"","hidden":false,"isChoice":false},{"q":"AAO工艺中，混合液回流(内回流)的主要目的是（）","a":"将硝化液送回缺氧段","e":"","hidden":false,"isChoice":false},{"q":"操作人员应定期排放曝气系统空气管路中的存水，并应及时关闭放水阀，一般时间设定为（）","a":"一周一次","e":"","hidden":false,"isChoice":false},{"q":"调节池的的作用是（）","a":"调节水量｜调节水质","e":"","hidden":false,"isChoice":false},{"q":"鼓风机巡检过程中需要留意的参数包括（）","a":"电压｜风量｜电流｜温度","e":"","hidden":false,"isChoice":false},{"q":"活性污泥法中的“曝气”主要目的是什么?","a":"提供氧气供微生物代谢","e":"","hidden":true,"isChoice":false},{"q":"检维修的操作流程包括（）","a":"工单生产｜作业前准备｜作业前最后安全检查｜开始作业｜试机｜现场清理｜工单闭环","e":"","hidden":false,"isChoice":false},{"q":"废水中TN(总氮)包括（），mg/L","a":"有机氮｜氨氮｜硝酸盐氮｜亚硝酸盐氮","e":"","hidden":false,"isChoice":false},{"q":"二期滤池反洗风机采用的是（）品牌是（）","a":"罗茨风机｜百事德","e":"","hidden":false,"isChoice":false},{"q":"NaClO的中文学名是（）","a":"次氯酸钠","e":"","hidden":false,"isChoice":false},{"q":"PAC呈（）","a":"酸","e":"","hidden":false,"isChoice":false},{"q":"污水厂高空作业(>2m，如池上栏杆外作业)必须（）","a":"系好安全带(高挂低用)，设专人监护","e":"单选题","hidden":false,"isChoice":false},{"q":"高密池瞬时进水量为180 m3/h.12%含量纯PAC投加浓度为30 mg/L,瞬时PAC母液投加量应为（）","a":"45kg/h","e":"","hidden":false,"isChoice":false},{"q":"活性炭罐的设计规模是（）","a":"10000m³/d","e":"","hidden":false,"isChoice":false},{"q":"高密池的设计进水水质是 COD（）","a":"60","e":"","hidden":false,"isChoice":false},{"q":"ORP越高说明（）","a":"氧化性越强","e":"","hidden":false,"isChoice":false},{"q":"传统 A2O 工艺中污泥回流主要目的（）","a":"维持厌氧池污泥浓度水平","e":"","hidden":false,"isChoice":false},{"q":"厌氧池可能会产生的主要有毒有害的气体包括（）","a":"硫化氢｜甲烷｜一氧化碳","e":"","hidden":false,"isChoice":false},{"q":"水泵的功率单位是（）","a":"kw","e":"","hidden":false,"isChoice":false},{"q":"在好氧脱碳工艺中，好氧微生物代谢营养比例是需求为C:N:P=（）其中C为（）","a":"100:5:1｜BOD5","e":"","hidden":false,"isChoice":false},{"q":"高密池瞬时进水量为120 m3/h.8%含量PAC母液投加浓度为100mg/L,瞬时PAC母液投加量应为（）","a":"150L/h","e":"","hidden":false,"isChoice":false},{"q":"污水处理厂安全培训中，以下哪项不属于“三违”行为?","a":"遵守操作规程","e":"","hidden":false,"isChoice":false},{"q":"水泵的扬程单位是（）","a":"m","e":"","hidden":false,"isChoice":false},{"q":"PAC作用是","a":"混凝","e":"","hidden":false,"isChoice":false},{"q":"厂区流量计共计有（）三种","a":"电磁流量计｜超声波流量计｜浮子流量计","e":"","hidden":false,"isChoice":false},{"q":"职安健公正文化三要素（）","a":"事故事件报告｜优秀做法分享｜奖惩措施","e":"","hidden":false,"isChoice":false},{"q":"电量的单位是（）","a":"kwh","e":"","hidden":false,"isChoice":false},{"q":"污水厂配电室发生电气火灾，应首选的灭火器是（）","a":"二氧化碳(CO₂)灭火器","e":"","hidden":false,"isChoice":false},{"q":"好氧池COD去除率低的原因有以下哪几点（）","a":"好氧池污泥老化泥龄长｜好氧池溶解氧不足｜原水含有有毒物质污泥中毒｜好氧池冲击负荷大或者好氧池出现污泥膨胀","e":"","hidden":false,"isChoice":false},{"q":"水里的COD是指什么?（）","a":"水体中有机物和还原性无机物污染程度的综合指标","e":"","hidden":false,"isChoice":false},{"q":"公司上游来水主要包括（）","a":"生物制药废水｜纺织印染废水｜氟化工废水｜其他精细化工废水","e":"","hidden":false,"isChoice":false},{"q":"进入有限空间作业时需要遵守的十大救命法则为（）","a":"进入可能存在有害气体的场所前，进行气体检测并在作业过程中持续监测","e":"","hidden":false,"isChoice":false},{"q":"当发现有人硫化氢中毒晕倒，施救者必须佩戴（）方可进入现场施救","a":"正压式SCBA","e":"","hidden":false,"isChoice":false},{"q":"1m³=（）dm3=（）L","a":"1000｜1000","e":"","hidden":false,"isChoice":false},{"q":"发现污水厂内有人触电，以下哪种做法是正确的?（）","a":"切断电源","e":"","hidden":false,"isChoice":false},{"q":"二沉池出水氨氮升高的原因包括（）","a":"硝化反应不足","e":"","hidden":false,"isChoice":false},{"q":"缺氧池的作用是（）","a":"反硝化反应场所","e":"","hidden":false,"isChoice":false},{"q":"和下图相关的十大救命法则是?","a":"远离吊装作业和任何存在坠物风险的区域","e":"","hidden":false,"isChoice":false},{"q":"皮肤或眼睛不慎溅入次氯酸钠或酸碱药液，第一时间应（）","a":"立即用大量流动清水冲洗至少15分钟并就医","e":"","hidden":false,"isChoice":false},{"q":"一般情况下，污水的可生化性取决于（）","a":"BOD5/COD的值","e":"","hidden":false,"isChoice":false},{"q":"新压力容器投用后（）年内应进行首次定期检验，后续检验周期根据安全状况等级确定，一般为每（）年一次","a":"3｜3-6","e":"","hidden":false,"isChoice":false},{"q":"NaAc的中文学名是","a":"乙酸钠","e":"","hidden":false,"isChoice":false},{"q":"反硝化脱氮过程中，C:N理论为（），实际生产过程中控制在（）其中C为","a":"2.865:1｜4:1｜BOD5","e":"","hidden":false,"isChoice":false},{"q":"活性炭罐的设计进水水质是COD（）SS（）","a":"80mg/L｜30mg/L","e":"","hidden":false,"isChoice":false},{"q":"避雷针及易燃易爆场所(如沼气柜)的防雷接地电阻应不大于（）","a":"4Ω","e":"","hidden":false,"isChoice":false},{"q":"臭氧接触氧化系统包括（）","a":"尾气破坏装置｜臭氧发生装置｜自动化控制系统｜氧气制备装置｜臭氧投加装置","e":"","hidden":false,"isChoice":false},{"q":"一期技改AAO生物反应池曝气风机采用的是（）品牌是（）","a":"磁悬浮风机｜亿昇","e":"","hidden":false,"isChoice":false},{"q":"ORP越低说明（）","a":"还原性越强","e":"","hidden":false,"isChoice":false},{"q":"活性炭在废水处理中可用于（）等","a":"去除异味｜脱色｜去除有机物","e":"","hidden":false,"isChoice":false},{"q":"臭氧的作用是（）","a":"将带有不饱和键的大分子有机物开环断链转化成小分子有机物提高可生化性｜将小分子有机物直接氧化成水和二氧化碳｜去除色度｜消毒","e":"","hidden":false,"isChoice":false},{"q":"溶解氧突然变低的可能有（）","a":"进水氨氮高｜进水COD高｜仪表故障｜设备故障","e":"","hidden":false,"isChoice":false},{"q":"缺氧区溶解氧控制在（）","a":"0.2-0.5 mg/L","e":"","hidden":false,"isChoice":false},{"q":"出水流量计采用的是（）","a":"巴氏计量槽","e":"","hidden":false,"isChoice":false},{"q":"公司内部涉及到的特种设备包括（）","a":"叉车｜压力容器｜起重机","e":"","hidden":false,"isChoice":false},{"q":"高密池堰口出水混浊的原因包括（）","a":"絮凝区比例过小｜絮凝区污泥浓度过高｜絮凝区发生故障｜混凝剂故障","e":"","hidden":false,"isChoice":false},{"q":"活性炭罐采用的是（）设计","a":"下流式","e":"","hidden":false,"isChoice":false},{"q":"水泵的流量单位是（）","a":"m³/h","e":"","hidden":false,"isChoice":false},{"q":"COD;NH3-N;TP;TN;氟化物;悬浮物的排水标准分别是（）","a":"50｜5(8)｜0.5｜15｜6｜10","e":"","hidden":false,"isChoice":false},{"q":"厌氧池溶解氧一般控制在0.2 mg/L以下，其目的是（）","a":"反硝化反应顺利进行","e":"","hidden":true,"isChoice":false},{"q":"污水处理中，调节池的作用是（）","a":"调节水量和水质","e":"","hidden":false,"isChoice":false},{"q":"下列哪项不属于生化池内的推流器的功能（）","a":"硝化","e":"本题为选择题答案","hidden":false,"isChoice":false},{"q":"污泥浓度计数据突然出现下降的原因有（）","a":"回流异常｜污泥浓度计故障","e":"","hidden":false,"isChoice":false},{"q":"在污水厂的日常运行中，运行人员需要对曝气池内的（）进行日常巡检","a":"曝气情况｜搅拌混合情况｜剩余污泥排放情况","e":"","hidden":false,"isChoice":false},{"q":"以下哪种物质是污水中的氮源（）","a":"以上都是","e":"本题为选择题答案","hidden":false,"isChoice":false},{"q":"压力容器安全附件中安全阀检定周期为（）","a":"一年","e":"","hidden":false,"isChoice":false},{"q":"消毒池两台提升泵的作用是（）","a":"将超标水回抽至事故池重新处理","e":"","hidden":false,"isChoice":false},{"q":"PAC的中文学名是","a":"聚合氯化铝","e":"","hidden":false,"isChoice":false},{"q":"有限空间作业审批表(作业票)有效期最长一般不超过（）","a":"8小时","e":"本题为选择题的答案","hidden":false,"isChoice":false},{"q":"污水处理厂安全检查中，以下哪项属于“五查”内容（）","a":"以上都是","e":"本题为选择题答案","hidden":false,"isChoice":false},{"q":"活性炭罐进水流量计采用的是（）","a":"电磁流量计","e":"","hidden":false,"isChoice":false},{"q":"特种设备投入使用之前30天内须办理（）","a":"使用登记证","e":"","hidden":false,"isChoice":false},{"q":"以下哪种行为属于污水处理厂的安全操作?（）","a":"正确佩戴绝缘手套","e":"","hidden":false,"isChoice":false},{"q":"生物滤池的作用是（）","a":"去除悬浮物｜去除cod","e":"","hidden":false,"isChoice":false},{"q":"污水厂防雷接地电阻值每年雨季前检测一次，要求不大于（）Ω","a":"4","e":"单选题","hidden":false,"isChoice":false},{"q":"进入缺氧密闭空间作业必须使用（）","a":"空气呼吸器","e":"","hidden":false,"isChoice":false},{"q":"下列哪些装置不算污泥的来源（）","a":"二沉池","e":"","hidden":false,"isChoice":false},{"q":"高密池混凝区的投加的药剂英文缩写是（）中文名称是（）","a":"pac｜聚合氯化铝","e":"","hidden":false,"isChoice":false},{"q":"水泵的基本参数包括（）","a":"流量｜扬程｜转速｜功率｜效率｜汽蚀余量","e":"","hidden":false,"isChoice":false},{"q":"二沉池巡检过程中需要遵守的十大救命法则为（）","a":"远离车辆和设备的行驶路径","e":"","hidden":false,"isChoice":false},{"q":"1 mg/L=（）kg/m³=（）g/m³","a":"0.001｜1","e":"","hidden":false,"isChoice":false},{"q":"污水处理厂安全培训中，“三级安全教育”的内容包括（）","a":"以上都是","e":"选择题的答案","hidden":false,"isChoice":false},{"q":"污水厂中常见的危险因素不包括以哪项?（）","a":"良好的工作环境","e":"","hidden":false,"isChoice":false},{"q":"进入可能产生缺氧或高浓度硫化氢的污水井作业，必须使用的呼吸防护装备是（）","a":"自给式空气呼吸器(SCBA)或长管呼吸器","e":"","hidden":false,"isChoice":false},{"q":"生化池上仪表的缩写（）","a":"DO｜ORP｜MLSS｜NT3","e":"","hidden":false,"isChoice":false},{"q":"活性污泥法处理系统主要由以下几个关键部分组成（）","a":"曝气池｜二沉池｜回流系统｜剩余污泥排放系统","e":"","hidden":false,"isChoice":false},{"q":"压力容器操作人员必须持相应的（）方可独立操作。","a":"特种设备作业证","e":"","hidden":false,"isChoice":false},{"q":"化验室稀释浓硫酸的正确操作是（）","a":"将浓硫酸缓慢沿器壁倒入水中，并不断搅拌","e":"","hidden":false,"isChoice":false},{"q":"臭氧尾气处理的方式是（）和（）","a":"催化剂｜高温","e":"","hidden":false,"isChoice":false},{"q":"高密池的主要作用是（）","a":"去除SS｜总磷","e":"","hidden":false,"isChoice":false},{"q":"高密池絮凝区的投加的药剂英文缩写是（）中文名称是（）","a":"APAM｜阴离子聚丙烯酰胺","e":"","hidden":false,"isChoice":false},{"q":"水泵的泵壳铭牌上简明列出了水泵在设计转速下运转，（）时的流量、扬程、轴功率及允许吸上真空高度或气蚀余量值。","a":"效率为最高","e":"","hidden":false,"isChoice":false},{"q":"好氧末端溶解氧控制在","a":"2-4 mg/L","e":"","hidden":false,"isChoice":false},{"q":"实际生产过程中，次氯酸钠的消毒作用主要体现在（）","a":"去除出水中的病毒、大肠杆菌等","e":"","hidden":false,"isChoice":false},{"q":"污水处理厂最常见的易燃易爆有毒气体是（）","a":"硫化氢","e":"","hidden":false,"isChoice":false},{"q":"大气排放执行的标准是（）","a":"恶臭污染物排放标准GB14554-93","e":"","hidden":false,"isChoice":false},{"q":"在污染物指标中凯氏氮TKN是氨氮和（）的总和。","a":"有机氮","e":"","hidden":true,"isChoice":false},{"q":"内回流的作用为（）","a":"为缺氧反硝化过程提供氮源","e":"","hidden":false,"isChoice":false},{"q":"污水中 SS 指的是（）","a":"悬浮固体","e":"","hidden":false,"isChoice":false},{"q":"将1 g氨氮氧化成硝酸盐氮需要（）g氧气","a":"4.67","e":"N（氮）的摩尔质量 = 14 g/mol\nO₂（氧气）的摩尔质量 = 32 g/mol\n从方程式看：\n1 mol NH₄⁺-N（即14 g氨氮）需要 2 mol O₂（即64 g氧气）\n比例换算\n需氧量=1 g N×（64 gO₂/14 g N）=4.57 gO ₂≈​4.67gO ₂","hidden":false,"isChoice":false},{"q":"污水处理厂应急预案演练，专项或综合演练至少应（）组织一次","a":"每半年","e":"","hidden":false,"isChoice":false},{"q":"实际生产过程中，次氯酸钠的强氧化性主要体现在（）","a":"用于降低出水氨氮","e":"","hidden":false,"isChoice":false},{"q":"在缺氧环境中作业时，必须佩戴的个人防护装备是（）","a":"氧气面罩","e":"","hidden":false,"isChoice":false},{"q":"鼓风机房噪声强度达98dB（），操作工每日暴露不得超过（）分钟","a":"30","e":"","hidden":false,"isChoice":false},{"q":"大气监测的指标主要包含（）","a":"臭气浓度｜氨｜硫化氢","e":"","hidden":false,"isChoice":false},{"q":"PAC的含量是指（）","a":"AI2O3含量[Al₂O₃]","e":"","hidden":false,"isChoice":false},{"q":"污水处理厂中，以下哪种气体浓度超标时，必须立即启动应急预案? （）","a":"硫化氢","e":"","hidden":false,"isChoice":false},{"q":"高密池瞬时进水量为150 m3/h,12%含量纯PAC投加浓度为30 mg/L,瞬时PAC母液投加量应为（）(PAC母液密度按照1.2kg/L计)","a":"31.25 L/h","e":"Q=(150x30x1000)/0.12x1.2=\n4,500,000/0.144=\n31,250ml/h=31.25 L/h","hidden":false,"isChoice":false},{"q":"高密池瞬时进水量为100m3/h.8%含量PAC母液投加浓度为100mg/L,瞬时PAC母液投加量应为（）。(PAC母液密度按照1.2kg/L计)","a":"104.17 L/h（注：原题答案8.3 L/h疑似有误）","e":"100 m³/h = 100,000 L/h[纯PAC需要量 = 流量 × 投加浓度]\n即100,000 L/h×100 mg/L=10,000,000 mg/h=10 kg/h\n换算成8%母液的质量\n(10 kg/h除8%)=10除0.08=125 kg/h\n换算成母液的体积\n125 kg/h除1.2kg/L=104.17 L/h[正确答案]","hidden":false,"isChoice":false},{"q":"好氧池的作用是（）","a":"硝化：反应将氨氮转化为硝酸盐氮｜碳化：将有机物转化成水和二氧化碳｜吸磷：聚磷菌在好氧环境下过量摄取磷并储存在体内｜氨化，有机氮转变成氨氮｜同化:合成细胞物质","e":"","hidden":false,"isChoice":false},{"q":"高密池的作用是（）","a":"去除SS｜总磷","e":"","hidden":false,"isChoice":false},{"q":"高密度沉淀池的组成包括（）","a":"混凝区｜絮凝区｜沉淀区","e":"","hidden":false,"isChoice":false},{"q":"《GBZ 2.1-2019工作场所有害因素职业接触限值 第1部分：化学有害因素》中规定臭氧的最高职业接触限值为（）mg/m³","a":"0.3","e":"","hidden":false,"isChoice":false},{"q":"NaClO的作用是（）","a":"消毒｜强氧化","e":"","hidden":false,"isChoice":false},{"q":"凯氏氮包括（）","a":"有机氮｜氨氮","e":"","hidden":false,"isChoice":false},{"q":"污泥回流比是指（）和（）之间的比值","a":"回流量｜进水量","e":"","hidden":false,"isChoice":false},{"q":"滤池反洗主要过程分为（）","a":"汽洗｜水洗｜汽水洗","e":"","hidden":false,"isChoice":false},{"q":"二期生物反应池曝气风机采用的是（）品牌是（）","a":"空气悬浮风机｜海拓滨","e":"","hidden":false,"isChoice":false},{"q":"一期滤池反洗风机采用的是（）品牌是（）","a":"罗茨风机｜AERZEN","e":"","hidden":false,"isChoice":false},{"q":"二沉池出水总氮升高的原因包括（）","a":"反硝化反应不足","e":"","hidden":false,"isChoice":false},{"q":"二沉池巡检过程中，巡检内容包括（）","a":"设备运行情况｜出水情况｜污泥回流情况｜排渣情况","e":"","hidden":false,"isChoice":false},{"q":"活性炭罐的设计出水水水质是COD（）SS（）","a":"50mg/L｜10mg/L","e":"","hidden":false,"isChoice":false},{"q":"磁悬浮风机出口流量计采用的是（）","a":"热式质量流量计","e":"","hidden":false,"isChoice":false},{"q":"臭氧具有（）遇到（）会发生剧烈反应，（）等甚至可能会发生爆炸","a":"强氧化性｜有机物｜易燃物｜静电｜明火｜撞击摩擦｜受热","e":"","hidden":false,"isChoice":false},{"q":"BOD 表示的是（）","a":"生化需氧量","e":"","hidden":false,"isChoice":false},{"q":"有防护罩的运行设备应悬挂（）","a":"机械伤人，禁止接触","e":"","hidden":false,"isChoice":false},{"q":"在A2O工艺中，沉淀池的作用包括（）","a":"泥水分离｜污泥浓缩｜回流控制｜减少污泥损失","e":"","hidden":false,"isChoice":false},{"q":"可能引起出水氨氮超标的原因（）","a":"曝气量不足导致溶解氧下降｜排泥未控制导致污泥浓度过低｜进水 COD、氨氮负荷变化，未及时调整工艺｜进水存在对硝化作用的有毒有害物质","e":"","hidden":false,"isChoice":false},{"q":"哪些参数是硝化反应的主要控制参数（）","a":"溶解氧、pH 值、水温","e":"","hidden":false,"isChoice":false},{"q":"污水厂调节池、格栅间等有限空间，进入前必须重点检测的有毒气体是（）","a":"硫化氢(H₂S)","e":"","hidden":false,"isChoice":false},{"q":"次氯酸钠与酸性清洗剂混合会产生什么有毒气体（）","a":"氯气","e":"","hidden":false,"isChoice":false},{"q":"有限空间作业前气体检测，氧含量(O₂)合格的安全范围是（）","a":"19.5%~23.5%","e":"","hidden":false,"isChoice":false},{"q":"发生危险化学品事故后，应该向（）方向疏散。","a":"上风","e":"","hidden":false,"isChoice":false},{"q":"进入格栅间（有限空间）前必须强制执行的步骤是（）","a":"检测硫化氢浓度","e":"","hidden":false,"isChoice":false},{"q":"进行腐蚀品的装卸作业应该戴（）手套","a":"橡胶","e":"","hidden":false,"isChoice":false},{"q":"带式脱水机紧急停机拉绳开关属于（）保护","a":"急停","e":"","hidden":false,"isChoice":false},{"q":"二沉池巡检内容包括（）","a":"减速机是否异响或漏油｜走道板是否有障碍物｜走道轮是否转动正常｜出水是否均匀｜出水悬浮物是否在合理范围之内｜堰口出水是否均匀｜查看已填｜浮渣积累情况｜排渣是否通畅｜污泥回流情况｜吸泥孔是否堵塞","e":"","hidden":false,"isChoice":false},{"q":"表示污水中可被微生物分解的有机污染物浓度，常用什么表示？","a":"BOD5","e":"","hidden":false,"isChoice":false},{"q":"污泥龄过短时，对硝化作用最直接的影响是？","a":"硝化菌难以维持，氨氮去除率下降","e":"","hidden":false,"isChoice":false},{"q":"硝化反应的主要产物是？","a":"硝酸盐氮","e":"","hidden":false,"isChoice":false},{"q":"反硝化过程通常需要什么条件？","a":"缺氧环境","e":"","hidden":false,"isChoice":false},{"q":"活性污泥系统中SVI主要用于评价？","a":"污泥沉降性能","e":"","hidden":false,"isChoice":false},{"q":"污泥膨胀时，二沉池最常见的现象是？","a":"出水悬浮物升高","e":"","hidden":false,"isChoice":false},{"q":"生物除磷系统中，聚磷菌通常在什么条件下释放磷？","a":"厌氧条件","e":"","hidden":false,"isChoice":false},{"q":"生物除磷系统中，聚磷菌通常在什么条件下吸收磷？","a":"好氧条件","e":"","hidden":false,"isChoice":false},{"q":"影响活性污泥微生物活性的关键因素包括()、()等？","a":"pH｜DO｜温度","e":"","hidden":false,"isChoice":false},{"q":"如果缺氧池溶解氧为0.05毫克每升，硝酸盐氮为10毫克每升，补充乙酸钠后，脱硝速率升高3倍，主控因素是？","a":"可利用碳源不足","e":"","hidden":false,"isChoice":false},{"q":"如果出水总氮为10 mg/L，其中氨氮0.1 mg/L、硝酸盐氮0.2 mg/L、溶解性有机氮9.7 mg/L，应优先？","a":"分析溶解性有机氮来源，避免盲目加碳","e":"","hidden":false,"isChoice":false},{"q":"SRT的计算方法是？","a":"系统内的活性污泥的量/(每天排放的剩余污泥的量+每天二沉池出水带走的悬浮物的量)","e":"","hidden":false,"isChoice":false},{"q":"如果计算污泥龄时未计入出水悬浮物，而出水跑泥突然加重，计算污泥龄较实际污泥龄会？","a":"偏大","e":"","hidden":false,"isChoice":false},{"q":"如果系统里剩余氨氮为30 mg/L，硝酸盐氮为20 mg/L，按消化耗碱系数7.14、反消化回补系数3.57计算，净消耗碱度约为？","a":"142.8 mg/L（以碳酸钙计）","e":"硝化消耗碱度：剩余氨氮 30 mg/L × 7.14 = 214.2 mg/L\n· 反硝化回补碱度：硝酸盐氮 20 mg/L × 3.57 = 71.4 mg/L\n· 净消耗碱度：214.2 − 71.4 = 142.8 mg/L\n\n答案：142.8 mg/L（以碳酸钙计）","hidden":false,"isChoice":false},{"q":"如果厌氧段溶解氧低于0.1毫克每升，挥发性脂肪酸充足，但硝酸盐氮为2.5毫克每升，释磷不足，应优先？","a":"控制硝酸盐回流进入厌氧段","e":"","hidden":false,"isChoice":false},{"q":"如果二沉池污泥成团上浮，污泥指数正常，进水硝酸盐氮偏高，最可能的原因是？","a":"二沉池反硝化产气导致污泥上浮","e":"","hidden":false,"isChoice":false},{"q":"如果氨氮接近0，亚硝酸盐持续积累，溶解氧为2 mg/L，酸碱度为6.7，碱度接近0，应优先？","a":"补充碱度并恢复适宜的酸碱度","e":"","hidden":false,"isChoice":false},{"q":"如果暴雨使流量增加100%，氨氮浓度下降40%，氨氮负荷会？","a":"增加20%","e":"","hidden":false,"isChoice":false},{"q":"如果耗氧速率突然下降35%，溶解氧上升，残余化学需氧量和氨氮同步上升，但酸碱度和温度正常，最可能的原因是？","a":"有有毒物质进入","e":"","hidden":false,"isChoice":false},{"q":"生化系统氨氮超标的原因有？","a":"有机负荷偏高｜氨氮负荷偏高｜水温过低或过高｜溶解氧异常｜污泥龄过短｜pH/碱度不异常｜有毒有害物质冲击","e":"","hidden":false,"isChoice":false},{"q":"调整生化系统碱度一般通过投加？","a":"碳酸钠/碳酸氢钠","e":"","hidden":false,"isChoice":false},{"q":"生化系统pH最佳范围是？","a":"7-8.5","e":"","hidden":false,"isChoice":false},{"q":"SV30是？","a":"污泥沉降比","e":"","hidden":false,"isChoice":false},{"q":"SVI是，正常范围是，表征的是污泥的","a":"污泥容积指数｜50-150｜污泥的沉降性能","e":"","hidden":false,"isChoice":false},{"q":"突然有一股高氨氮废水进入到生化池第一步需要？","a":"降低进水量｜关注溶解氧变化","e":"","hidden":false,"isChoice":false},{"q":"污泥泥龄过长会导致？","a":"污泥老化｜污泥活性下降","e":"","hidden":false,"isChoice":false},{"q":"污泥龄过短会导致？","a":"硝化细菌流失｜硝化过程异常","e":"","hidden":false,"isChoice":false},{"q":"污泥颜色发黑的原因是？","a":"缺氧或者厌氧时间过长","e":"","hidden":false,"isChoice":false},{"q":"冬天氨氮处理难度较大的原因是？","a":"水温较低会降低硝化活性","e":"","hidden":false,"isChoice":false},{"q":"硝化过程需要消耗？","a":"碱度","e":"","hidden":false,"isChoice":false},{"q":"硝化的最佳pH范围是在？","a":"7.5-8.5","e":"","hidden":false,"isChoice":false},{"q":"生化末端的碱度最低不低于多少mg/L？","a":"100","e":"","hidden":false,"isChoice":false},{"q":"反硝化过程产生碱度？","a":"3.57","e":"NO₃⁻ + 1.25 CH₃OH → 0.5 N₂ + 1.25 CO₂ + 1.75 H₂O + OH⁻\n\n从该反应式可以看出，每还原 1 mol NO₃⁻-N（14 g），会产生 1 mol OH⁻。在碱度计算中，1 mol OH⁻ 相当于 1 mol CaCO₃（100 g）。\n\n因此，每还原 1 mg NO₃⁻-N，理论产生碱度 = (100 / 14) ≈ 7.14 mg（以 CaCO₃ 计）\n硝化耗碱 7.14，反硝化补 3.57，刚好一半","hidden":false,"isChoice":false},{"q":"硝化细菌喜欢的环境是","a":"高溶解氧｜长泥龄｜低有机物含量","e":"","hidden":false,"isChoice":false},{"q":"生化池产生棕褐色粘性泡沫原因是？","a":"污泥老化","e":"","hidden":false,"isChoice":false},{"q":"生化池产生大量白色粘性泡沫、堆叠较高原因是？","a":"负荷过高","e":"","hidden":false,"isChoice":false},{"q":"氨化的作用是将转化成？","a":"有机氮｜氨氮","e":"","hidden":false,"isChoice":false},{"q":"硝化反应的作用是将转化成？","a":"氨氮｜硝酸盐氮","e":"","hidden":false,"isChoice":false},{"q":"反硝化的作用是将还原成？","a":"硝酸盐氮｜氮气","e":"","hidden":false,"isChoice":false},{"q":"氨氮的同化作用是将转化为？","a":"有机氮｜细胞物质","e":"","hidden":false,"isChoice":false},{"q":"硝化细菌是微生物，需要的碳源是、等碳无机物？","a":"化能自养型｜CO2｜碳酸盐","e":"","hidden":false,"isChoice":false},{"q":"反硝化细菌大多为是微生物，常用的碳源有、等？","a":"化能异养型｜乙酸｜乙酸钠｜甲醇","e":"","hidden":false,"isChoice":false},{"q":"总磷的去除途径包括？","a":"生物除磷｜化学除磷","e":"","hidden":false,"isChoice":false},{"q":"危险废物的特性包括？","a":"毒性｜腐蚀性｜易燃性｜感染性｜化学反应性","e":"","hidden":false,"isChoice":false},{"q":"危废管理全过程管理包括？","a":"产生｜收集｜储存｜转移｜运输｜利用｜处置","e":"","hidden":false,"isChoice":false},{"q":"贮存设施应根据危险废物的形态、物理化学性质、包装形式和污染物迁移途径，采取必要6防措施包括？","a":"防风｜防晒｜防雨｜防漏｜防渗｜防腐","e":"","hidden":false,"isChoice":false},{"q":"贮存点应及时清运贮存的危险废物，实时贮存量不应超过多少吨？","a":"3","e":"","hidden":false,"isChoice":false},{"q":"厌氧池溶解氧一般控制在0.2 mg/L以下，其目的是？","a":"更好的释磷","e":"","hidden":false,"isChoice":false},{"q":"进入有限空间（如阀门井、污水井）作业，必须遵循的原则是？","a":"先通风｜后检测｜再作业","e":"","hidden":false,"isChoice":false},{"q":"309、206二沉池巡检内容包括","a":"减速机是否有异响漏油｜走道板是否有障碍物｜走道轮是否转动正常和轮胎磨损｜出水是否均匀｜悬浮物是否在合理范围之内｜浮渣的积累情况｜排渣是否通畅｜污泥回流情况｜吸泥孔是否堵塞","e":"","hidden":false,"isChoice":false},{"q":"水泵的泵壳铭牌上简明列出了水泵在设计转速下运转，时的流量、扬程、轴功率及允许吸上真空高度或气蚀余量值？","a":"效率最高","e":"","hidden":true,"isChoice":false},{"q":"在污染物指标中凯氏氮TKN是和的总和？","a":"氨氮｜有机氮","e":"","hidden":false,"isChoice":false},{"q":"活性污泥法中的“曝气”主要目的是？","a":"为微生物代谢提供氧气","e":"","hidden":false,"isChoice":false},{"q":"硫化氢浓度超过多少时，数秒内就可致人闪电型死亡？","a":"1000 mg/m³","e":"","hidden":true,"isChoice":false},{"q":"凡在高地面（）的地点进行的工作，都应视作高处作业？","a":"2m","e":"","hidden":false,"isChoice":false},{"q":"有限空间作业“三不进入”原则是？","a":"无作业票不进入｜监护人员不到位不进入｜安全措施不落实不进入","e":"","hidden":false,"isChoice":false},{"q":"污水厂高压配电室发生火警，首选灭火剂为？","a":"二氧化碳","e":"","hidden":false,"isChoice":false},{"q":"污水厂防雷接地电阻值每年雨季前检测一次，避雷针及易燃易爆场所防雷接地电阻要求不大于多少Ω？","a":"4","e":"","hidden":false,"isChoice":false},{"q":"次氯酸钠与酸性清洗剂混合会产生什么有毒气体？","a":"氯气","e":"","hidden":true,"isChoice":false},{"q":"污水处理厂安全培训中，“三级安全教育”的内容包括？","a":"公司级｜部门级｜班组级","e":"","hidden":false,"isChoice":false},{"q":"有限空间作业前气体检测，氧含量（O₂）合格的安全范围是？","a":"19.5%~23.5%","e":"","hidden":true,"isChoice":false},{"q":"有限空间作业前气体检测，硫化氢含量（H2S）容许的浓度上限值是多少mg/m3或ppm（20℃）？","a":"10｜7","e":"","hidden":false,"isChoice":false},{"q":"低浓度的硫化氢有明显的（）气味","a":"臭鸡蛋","e":"","hidden":false,"isChoice":false},{"q":"硫化氢与空气混合能形成爆炸性混合气体，遇明火，高热等点火源将引发（）","a":"燃烧爆炸","e":"","hidden":false,"isChoice":false},{"q":"根据《有限空间作业安全技术规范》及相关安全标准，在进入有限空间进行作业前，必须进行气体检测。为了确保安全，防止发生爆炸事故，作业环境中可燃气体的浓度应低于其爆炸下限(LEL)的多少？","a":"10%","e":"","hidden":false,"isChoice":false},{"q":"污水厂高空作业（≥2m，如池上栏杆外作业）必须（）","a":"系好安全带","e":"","hidden":false,"isChoice":false},{"q":"有限空间作业审批表（作业票）有效期最长一般不超过？","a":"8h","e":"","hidden":false,"isChoice":false},{"q":"皮肤或眼睛不慎溅入次氯酸钠或酸碱药液，第一时间应？","a":"立即用大量流动清水冲洗至少15分钟，并就医","e":"","hidden":true,"isChoice":false},{"q":"电流的单位是","a":"A","e":"","hidden":false,"isChoice":false},{"q":"生化系统氨氮超标的原有","a":"有机负荷偏高｜氨氮负荷偏高｜水温过低或过高｜溶解氧异常｜污泥龄过短｜pH/碱度不异常｜有毒有害物质冲击","e":"","hidden":false,"isChoice":false},{"q":"危废管理全过程管理括","a":"产生｜收集｜储存｜转移｜运输｜利用｜处置","e":"","hidden":false,"isChoice":false},{"q":"测试","a":"测试","e":"","hidden":false,"isChoice":false}];
@@ -883,9 +1003,9 @@ function loadUserSession() {
 }
 function clearUserSession() { 
     try { 
-        if(window._SQL_CACHE) {
-            delete window._SQL_CACHE[USER_SESSION_KEY];
-            window._SQL_CACHE[USER_SESSION_KEY] = null;
+        if(window._AT_CACHE) {
+            delete window._AT_CACHE[USER_SESSION_KEY];
+            window._AT_CACHE[USER_SESSION_KEY] = null;
         }
         window.localStorage.removeItem(USER_SESSION_KEY);
     } catch (e) { } 
@@ -916,10 +1036,10 @@ function consumeAdminPassTicket() {
         return obj;
     } catch (e) { return null; }
 }
-// ===== 管理员多账号 / 多密码存储（SQL 优先，localStorage 兜底，账号与密码随意搭配） =====
+// ===== 管理员多账号 / 多密码存储（AtomGit 优先，localStorage 兜底，账号与密码随意搭配） =====
 function loadAdminAccounts() {
-    if (window._SQL_CACHE && Array.isArray(window._SQL_CACHE[ADMIN_ACCOUNTS_KEY]) && window._SQL_CACHE[ADMIN_ACCOUNTS_KEY].length) {
-        return window._SQL_CACHE[ADMIN_ACCOUNTS_KEY];
+    if (window._AT_CACHE && Array.isArray(window._AT_CACHE[ADMIN_ACCOUNTS_KEY]) && window._AT_CACHE[ADMIN_ACCOUNTS_KEY].length) {
+        return window._AT_CACHE[ADMIN_ACCOUNTS_KEY];
     }
     try {
         const raw = localStorage.getItem(ADMIN_ACCOUNTS_KEY);
@@ -932,11 +1052,11 @@ function loadAdminAccounts() {
 }
 function saveAdminAccounts(list) {
     try { localStorage.setItem(ADMIN_ACCOUNTS_KEY, JSON.stringify(list)); } catch (e) { }
-    if (window._SQL_CACHE) window._SQL_CACHE[ADMIN_ACCOUNTS_KEY] = list;
+    if (window._AT_CACHE) window._AT_CACHE[ADMIN_ACCOUNTS_KEY] = list;
 }
 function loadAdminPasswords() {
-    if (window._SQL_CACHE && Array.isArray(window._SQL_CACHE[ADMIN_PASSWORDS_KEY]) && window._SQL_CACHE[ADMIN_PASSWORDS_KEY].length) {
-        return window._SQL_CACHE[ADMIN_PASSWORDS_KEY];
+    if (window._AT_CACHE && Array.isArray(window._AT_CACHE[ADMIN_PASSWORDS_KEY]) && window._AT_CACHE[ADMIN_PASSWORDS_KEY].length) {
+        return window._AT_CACHE[ADMIN_PASSWORDS_KEY];
     }
     try {
         const raw = localStorage.getItem(ADMIN_PASSWORDS_KEY);
@@ -949,7 +1069,7 @@ function loadAdminPasswords() {
 }
 function saveAdminPasswords(list) {
     try { localStorage.setItem(ADMIN_PASSWORDS_KEY, JSON.stringify(list)); } catch (e) { }
-    if (window._SQL_CACHE) window._SQL_CACHE[ADMIN_PASSWORDS_KEY] = list;
+    if (window._AT_CACHE) window._AT_CACHE[ADMIN_PASSWORDS_KEY] = list;
 }
 // 账号属于管理员集合 且 密码属于密码集合 => 任意搭配均可登录
 function checkAdminCredential(username, pwd) {
@@ -957,60 +1077,26 @@ function checkAdminCredential(username, pwd) {
     const passwords = loadAdminPasswords();
     return accounts.includes(username) && passwords.includes(pwd);
 }
-// 立即把账号/密码集合写入 SQL（跨端同步），失败不回滚本地
-async function pushAdminAuthToSQL() {
-    const accounts = loadAdminAccounts();
-    const passwords = loadAdminPasswords();
-    const payload = {
-        [ADMIN_ACCOUNTS_KEY]: accounts,
-        [ADMIN_PASSWORDS_KEY]: passwords
-    };
-    try {
-        const resp = await fetch(API_BASE + '/api/save-data', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        });
-        return resp.ok;
-    } catch (e) {
-        console.warn('⚠️ 管理员账号/密码同步 SQL 失败，已保留本地缓存', e);
-        return false;
-    }
-}
 
 // ==================== 用户 API ====================
 async function fetchUsersJson() {
     try {
-        // 优化：直接拉取全部数据时，服务器端可能返回全部 bank，这里增加超时控制，加速失败反馈
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 8000); // 8秒超时
-        
-        const resp = await fetch(API_BASE + '/api/get-all-data?t=' + Date.now(), { 
-            cache: 'no-store',
-            signal: controller.signal
-        });
-        clearTimeout(timeoutId);
-        
-        if (!resp.ok) return null;
-        const json = await resp.json();
-        if (!json.success) return null;
-        const raw = json.data[NS + 'users'];
-        if (!raw) return { users: {} };
-        if (typeof raw === 'string') { try { return { users: JSON.parse(raw) || {} }; } catch (e) { return { users: {} }; } }
-        return { users: raw || {} };
-    } catch (e) { 
+        if (!window._AG_USERS) {
+            const obj = await agGetJSON(AG_USERS_FILE);
+            window._AG_USERS = (obj && obj.users) || {};
+        }
+        return { users: window._AG_USERS || {} };
+    } catch (e) {
         console.warn('拉取用户数据失败或超时', e);
-        return null; 
+        return null;
     }
 }
 async function pushUsersJson(usersObj) {
+    window._AG_USERS = usersObj;
     try {
-        const resp = await fetch(API_BASE + '/api/save-data', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ [NS + 'users']: usersObj })
-        });
-        return resp.ok;
-    } catch (e) { return false; }
+        await agPutJSON(AG_USERS_FILE, { users: usersObj }, '更新用户/已会');
+        return true;
+    } catch (e) { console.warn('pushUsersJson 失败', e); return false; }
 }
 async function registerUser_api(username, password) {
     if (!username || !password) return { ok: false, msg: '用户名和密码不能为空' };
@@ -1050,48 +1136,39 @@ function saveMasteredListForCurrentUser(list) {
 async function syncMasteredToCloud() {
     if (!currentUser || !currentUser.username) return false;
     const map = loadMasteredMap();
-    // 直接推送到服务器
-    const ok = await sendToServer(MASTERED_KEY, map);
-    // 成功后不盲目拉取，防止覆盖刚刚的操作；本地界面已经由 onToggleMastered 更新过了
-    return ok;
+    try {
+        const data = await fetchUsersJson();
+        if (!data) return false;
+        const uname = currentUser.username;
+        if (!data.users[uname]) data.users[uname] = { password: '', mastered: [], createdAt: nowTs(), lastLogin: nowTs() };
+        data.users[uname].mastered = map[uname] || [];
+        data.users[uname].lastLogin = nowTs();
+        return await pushUsersJson(data.users);
+    } catch (e) { console.warn('syncMasteredToCloud 异常', e); return false; }
 }
 
 // 新增极速拉取单独 Mastered 的函数 (加入防超时)
+function usersToMasteredMap(users) {
+    const map = {};
+    for (const name in users) {
+        if (users[name] && Array.isArray(users[name].mastered)) map[name] = users[name].mastered;
+    }
+    return map;
+}
 async function fetchLatestMasteredFromServer() {
     try {
-        const controller = new AbortController();
-        // 放宽到 10 秒，坚决防止因为网络一点波动就被强行掐断
-        const timeoutId = setTimeout(() => controller.abort(), 10000);
-        
-        const resp = await fetch(API_BASE + '/api/get-all-data?t=' + Date.now(), { 
-            cache: 'no-store',
-            signal: controller.signal
-        });
-        clearTimeout(timeoutId);
-        
-        if (!resp.ok) return null;
-        const json = await resp.json();
-        if (json.success && json.data && json.data[MASTERED_KEY]) {
-            const raw = json.data[MASTERED_KEY];
-            return typeof raw === 'string' ? JSON.parse(raw) : raw;
-        }
-    } catch (e) {
-        // 静默失败，防止卡死
-    }
-    return null;
+        const obj = await agGetJSON(AG_USERS_FILE);
+        if (!obj || !obj.users) return null;
+        return usersToMasteredMap(obj.users);
+    } catch (e) { return null; }
 }
 async function loadMasteredFromCloud() {
     if (!currentUser || !currentUser.username) return;
     try {
-        const resp = await fetch(API_BASE + '/api/get-all-data?t=' + Date.now(), { cache: 'no-store' });
-        if (!resp.ok) return;
-        const json = await resp.json();
-        if (!json.success) return;
-        const raw = json.data[MASTERED_KEY];
-        if (raw) {
-            const remote = typeof raw === 'string' ? JSON.parse(raw) : raw;
-            const localMap = loadMasteredMap(); Object.assign(localMap, remote); saveMasteredMap(localMap);
-        }
+        const obj = await agGetJSON(AG_USERS_FILE);
+        if (!obj || !obj.users) return;
+        const remote = usersToMasteredMap(obj.users);
+        const localMap = loadMasteredMap(); Object.assign(localMap, remote); saveMasteredMap(localMap);
     } catch (e) { }
 }
 // ==================== 终极秒同步机制（数据随广播下发） ====================
@@ -1147,17 +1224,13 @@ async function onToggleMastered(questionText, btnEl) {
 
     // 2. 发往服务器，让其他手机在后台默默通过定时器获取
     // 后台 POST 完就不管了，完全不影响当前点击体验
-    fetch(API_BASE + '/api/save-data', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ [MASTERED_KEY]: latestMap })
-    }).catch(e => console.warn('后台同步失败，不影响本地'));
+    Promise.resolve().then(() => syncMasteredToCloud());
 }
 
 // ==================== 题库与练习配置 ====================
 function loadBank() {
-    if (window._SQL_CACHE && window._SQL_CACHE[STORAGE_KEY]) {
-        const arr = window._SQL_CACHE[STORAGE_KEY];
+    if (window._AT_CACHE && window._AT_CACHE[STORAGE_KEY]) {
+        const arr = window._AT_CACHE[STORAGE_KEY];
         if (Array.isArray(arr) && arr.length) {
             questionBank = arr.map(item => ({ q: item.q || '', a: item.a || '', e: item.e || '', hidden: item.hidden === true, isChoice: item.isChoice === true }));
             return;
@@ -1184,14 +1257,14 @@ function persistBank() {
 }
 
 function loadPracticeCfg() {
-    if (window._SQL_CACHE && window._SQL_CACHE[PRACTICE_CFG_KEY]) return window._SQL_CACHE[PRACTICE_CFG_KEY];
+    if (window._AT_CACHE && window._AT_CACHE[PRACTICE_CFG_KEY]) return window._AT_CACHE[PRACTICE_CFG_KEY];
     try { const raw = localStorage.getItem(PRACTICE_CFG_KEY); if (raw) return JSON.parse(raw); } catch (e) { }
     return { threshold: 75, singleOptions: {}, multiOptions: {}, singleCorrect: {}, multiCorrect: {} };
 }
 function savePracticeCfg(cfg) { try { localStorage.setItem(PRACTICE_CFG_KEY, JSON.stringify(cfg)); } catch (e) { } }
 
 function loadPracticeEdit() {
-    if (window._SQL_CACHE && window._SQL_CACHE[PRACTICE_EDIT_KEY]) return window._SQL_CACHE[PRACTICE_EDIT_KEY];
+    if (window._AT_CACHE && window._AT_CACHE[PRACTICE_EDIT_KEY]) return window._AT_CACHE[PRACTICE_EDIT_KEY];
     try { const raw = localStorage.getItem(PRACTICE_EDIT_KEY); if (raw) return JSON.parse(raw); } catch (e) { }
     return {};
 }
@@ -2135,9 +2208,9 @@ async function doUserLogout() {
     currentUser = null; 
     
     // 1. 清理内存
-    if (window._SQL_CACHE) {
-        delete window._SQL_CACHE[USER_SESSION_KEY];
-        window._SQL_CACHE[USER_SESSION_KEY] = null;
+    if (window._AT_CACHE) {
+        delete window._AT_CACHE[USER_SESSION_KEY];
+        window._AT_CACHE[USER_SESSION_KEY] = null;
     }
     // 2. 暴力清理本地
     window.localStorage.removeItem(USER_SESSION_KEY);
@@ -2181,7 +2254,7 @@ async function tryRestoreUserSession() {
             const isAdminAccount = obj && obj.username && adminAccounts.includes(obj.username);
             if (obj && obj.username && obj.username !== 'null' && !isAdminAccount) {
                 currentUser = { username: obj.username, password: obj.password };
-                window._SQL_CACHE[USER_SESSION_KEY] = obj;
+                window._AT_CACHE[USER_SESSION_KEY] = obj;
                 if (typeof loadMasteredFromCloud === 'function') {
                     loadMasteredFromCloud().then(() => {
                         renderStudyList('');
@@ -2214,41 +2287,23 @@ function startCrossDeviceSync() {
         isSyncing = true;
 
 try {
-    // ★ 核心改造：加上 3 秒超时，绝对不傻等！
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 3000);
-    
-    const resp = await fetch(API_BASE + '/api/get-all-data?t=' + Date.now(), { 
-        cache: 'no-store',
-        signal: controller.signal
-    });
-    clearTimeout(timeoutId);
-    
-    if (resp.ok) {
-                const json = await resp.json();
-                if (json.success && json.data && json.data[MASTERED_KEY]) {
-                    let remote = json.data[MASTERED_KEY];
-                    try { remote = typeof remote === 'string' ? JSON.parse(remote) : remote; } catch (e) {}
-                    
-                    const localMap = loadMasteredMap();
-                    const localUserList = localMap[currentUser.username] || [];
-                    const remoteUserList = remote[currentUser.username] || [];
-                    
-                    const localStr = JSON.stringify(localUserList.slice().sort());
-                    const remoteStr = JSON.stringify(remoteUserList.slice().sort());
-                    
-                    if (localStr !== remoteStr) {
-                        Object.assign(localMap, remote);
-                        saveMasteredMap(localMap);
-                        if (isStudyMode) {
-                            renderStudyList(document.getElementById('studySearch').value || '');
-                            // 给个轻微提示，让用户知道其它端操作了
-                            showToast('🔄 其它端已会状态已同步'); 
-                        }
-                    }
-                }
+    const remote = await fetchLatestMasteredFromServer();
+    if (remote) {
+        const localMap = loadMasteredMap();
+        const localUserList = localMap[currentUser.username] || [];
+        const remoteUserList = remote[currentUser.username] || [];
+        const localStr = JSON.stringify(localUserList.slice().sort());
+        const remoteStr = JSON.stringify(remoteUserList.slice().sort());
+        if (localStr !== remoteStr) {
+            Object.assign(localMap, remote);
+            saveMasteredMap(localMap);
+            if (isStudyMode) {
+                renderStudyList(document.getElementById('studySearch').value || '');
+                showToast('🔄 其它端已会状态已同步');
             }
-        } catch (e) {
+        }
+    }
+} catch (e) {
         // 如果是超时，给个轻微提示（可选）
         if (e.name === 'AbortError') {
             console.log('⏱️ 请求超时，3秒后极速重试');
@@ -2873,14 +2928,14 @@ try { renderStudyList(''); } catch (e) { console.warn('renderStudyList 失败', 
 console.log('⚡ 本地界面极速渲染完毕');
 
 // 2. 页面渲染完毕后，后台默默去同步云端数据
-const isSkipSQLInit = sessionStorage.getItem('SKIP_SQL_INIT') === 'true';
-if (isSkipSQLInit) {
-    sessionStorage.removeItem('SKIP_SQL_INIT');
+const isSkipATInit = sessionStorage.getItem('SKIP_AT_INIT') === 'true';
+if (isSkipATInit) {
+    sessionStorage.removeItem('SKIP_AT_INIT');
     console.log('⚡ 刚保存过，无需拉取云端');
 } else {
     // 后台静默拉取，不阻塞任何界面
-    initSQLData().then(() => {
-    if (window._SQL_CACHE && Object.keys(window._SQL_CACHE).length > 0) {
+    initATData().then(() => {
+    if (window._AT_CACHE && Object.keys(window._AT_CACHE).length > 0) {
         const oldBankStr = JSON.stringify(questionBank);
         // 重新解析云端的最新题库
         loadBank();
@@ -2894,13 +2949,13 @@ if (isSkipSQLInit) {
                 renderBankList('');
             }
         }
-        // 把 SQL 里的管理员账号/密码同步到本地缓存（跨端生效）
+        // 把 AtomGit 里的管理员账号/密码同步到本地缓存（跨端生效）
         try {
-            if (Array.isArray(window._SQL_CACHE[ADMIN_ACCOUNTS_KEY]) && window._SQL_CACHE[ADMIN_ACCOUNTS_KEY].length) {
-                localStorage.setItem(ADMIN_ACCOUNTS_KEY, JSON.stringify(window._SQL_CACHE[ADMIN_ACCOUNTS_KEY]));
+            if (Array.isArray(window._AT_CACHE[ADMIN_ACCOUNTS_KEY]) && window._AT_CACHE[ADMIN_ACCOUNTS_KEY].length) {
+                localStorage.setItem(ADMIN_ACCOUNTS_KEY, JSON.stringify(window._AT_CACHE[ADMIN_ACCOUNTS_KEY]));
             }
-            if (Array.isArray(window._SQL_CACHE[ADMIN_PASSWORDS_KEY]) && window._SQL_CACHE[ADMIN_PASSWORDS_KEY].length) {
-                localStorage.setItem(ADMIN_PASSWORDS_KEY, JSON.stringify(window._SQL_CACHE[ADMIN_PASSWORDS_KEY]));
+            if (Array.isArray(window._AT_CACHE[ADMIN_PASSWORDS_KEY]) && window._AT_CACHE[ADMIN_PASSWORDS_KEY].length) {
+                localStorage.setItem(ADMIN_PASSWORDS_KEY, JSON.stringify(window._AT_CACHE[ADMIN_PASSWORDS_KEY]));
             }
         } catch (e) { }
     }
@@ -2949,14 +3004,14 @@ if (isSkipSQLInit) {
         if (!q || !a) { showToast('不能为空'); return; }
         const oldHidden = questionBank[selectedIdx].hidden; // 保留原有的隐藏状态
         questionBank[selectedIdx] = { q, a, e, hidden: oldHidden, isChoice: document.getElementById('editChoiceCheck').checked };
-        hasUnsavedChanges = true; showToast('已修改 (仅本地保存，未上传SQL)');
+        hasUnsavedChanges = true; showToast('已修改 (仅本地保存，未上传仓库)');
         renderBankList((document.getElementById('bankSearch') || {}).value || ''); showEditForm(selectedIdx);
     });
     on('editDelete', 'click', async function () {
     if (selectedIdx < 0 || !await showCustomConfirm('确认删除本题？此操作无法撤销。')) return;
     questionBank.splice(selectedIdx, 1); hasUnsavedChanges = true; selectedIdx = -1;
     const f = document.getElementById('editForm'); if (f) f.style.display = 'none';
-    showToast('已删除 (仅本地保存，未上传SQL)');
+    showToast('已删除 (仅本地保存，未上传仓库)');
     renderBankList((document.getElementById('bankSearch') || {}).value || '');
 });
 
@@ -2971,7 +3026,7 @@ if (isSkipSQLInit) {
         const e = (document.getElementById('addE') || {}).value.trim();
         if (!q || !a) { showToast('不能为空'); return; }
         questionBank.push({ q, a, e, hidden: false, isChoice: document.getElementById('addChoiceCheck').checked });
-        hasUnsavedChanges = true; showToast('已新增 (仅本地保存，未上传SQL)');
+        hasUnsavedChanges = true; showToast('已新增 (仅本地保存，未上传仓库)');
         const c = document.getElementById('addClear'); if (c) c.click();
     });
 
@@ -3065,7 +3120,7 @@ if (isSkipSQLInit) {
 on('bankSaveUploadBtn', 'click', async function () {
     if (!hasUnsavedChanges) { showToast('没有修改'); return; }
 
-    const code = await showCustomPrompt('确认保存并上传到 SQL 数据库？(输入确认代码)', '请输入确认代码');
+    const code = await showCustomPrompt('确认保存并上传到 AtomGit 仓库？(输入确认代码)', '请输入确认代码');
 if (code !== 'qiuhua') {
     if (code !== null) showToast('❌ 密码错误，保存已取消');
     return;
@@ -3082,39 +3137,29 @@ if (code !== 'qiuhua') {
         const editData = loadPracticeEdit();
         savePracticeEdit(editData);
 
-        // 2. 同步到 _SQL_CACHE，避免刷新后读回旧数据
-        window._SQL_CACHE[STORAGE_KEY] = questionBank;
-        window._SQL_CACHE[PRACTICE_CFG_KEY] = cfg;
-        window._SQL_CACHE[PRACTICE_EDIT_KEY] = editData;
-        window._SQL_CACHE[BANK_TS_KEY] = String(nowTs());
+        // 2. 同步到 _AT_CACHE，避免刷新后读回旧数据
+        window._AT_CACHE[STORAGE_KEY] = questionBank;
+        window._AT_CACHE[PRACTICE_CFG_KEY] = cfg;
+        window._AT_CACHE[PRACTICE_EDIT_KEY] = editData;
+        window._AT_CACHE[BANK_TS_KEY] = String(nowTs());
 
-        // 3. 真正上传到 SQL（一次性打包全部数据）
+        // 3. 上传到 AtomGit（题库 / 练习配置 / 练习编辑 / 时间戳）
         const ts = String(nowTs());
-        const payload = {
-            [STORAGE_KEY]: questionBank,
-            [PRACTICE_CFG_KEY]: cfg,
-            [PRACTICE_EDIT_KEY]: editData,
-            [BANK_TS_KEY]: ts
-        };
-
-        const resp = await fetch(API_BASE + '/api/save-data', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        });
-
-        if (!resp.ok) throw new Error('HTTP ' + resp.status);
-        const json = await resp.json().catch(() => ({}));
-        if (json && json.success === false) throw new Error(json.message || '服务端返回失败');
+        await agSaveData({
+            bank: questionBank,
+            practiceCfg: cfg,
+            practiceEdit: editData,
+            bankTs: ts
+        }, '保存题库与练习配置');
 
         hasUnsavedChanges = false;
-showToast('✅ 已正式保存并上传到 SQL');
+showToast('✅ 已正式保存并上传到 AtomGit');
 
 // 4. 写入一次性管理员通行证，保证“保存并上传”触发的这次刷新不掉登录
 issueAdminPassTicket();
 
 // 5. 带时间戳刷新，绕过缓存，并标记跳过网络加载
-sessionStorage.setItem('SKIP_SQL_INIT', 'true');
+sessionStorage.setItem('SKIP_AT_INIT', 'true');
 setTimeout(() => {
     location.replace(location.href.split('#')[0] + '?t=' + Date.now());
 }, 900);
@@ -3221,8 +3266,8 @@ setTimeout(() => {
     saveAdminPasswords(cleanedPwd);
     _adminAccDraft = cleanedAcc.slice();
     _adminPwdDraft = cleanedPwd.slice();
-    const ok = await pushAdminAuthToSQL();
-    showToast(ok ? '✅ 管理员账号/密码已更新并同步 SQL' : '✅ 已更新（SQL 同步失败，已存本地）');
+    const ok = await pushAdminAuthToAT();
+    showToast(ok ? '✅ 管理员账号/密码已更新并同步 AtomGit' : '✅ 已更新（AtomGit 同步失败，已存本地）');
     document.getElementById('adminAccountModal').classList.remove('active');
 });
 
