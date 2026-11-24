@@ -118,6 +118,54 @@ body{padding:16px;display:flex;flex-direction:column;align-items:center;}
 .bank-item .bi-edit-btn:hover{background:#dbeafe;border-color:#93c5fd;}
 .edit-form{margin-top:14px;border-top:1px solid #eef2f8;padding-top:14px;}
 
+/* 题库更新 */
+.upd-toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px;width:100%;}
+.upd-toolbar .btn{white-space:nowrap;flex-shrink:0;}
+.upd-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(104px,1fr));gap:8px;margin-bottom:10px;}
+.upd-summary .us-item{border:1px solid #e2ecf7;border-radius:10px;padding:7px 10px;background:#fafdff;font-size:12px;color:#4a6a8a;min-width:0;}
+.upd-summary .us-item b{display:block;font-size:14px;color:#1e40af;margin-top:2px;}
+.upd-main{border:1px solid #e2ecf7;border-radius:12px;overflow:hidden;width:100%;}
+.upd-cols{display:flex;gap:0;}
+.upd-col{flex:1 1 0;min-width:0;display:flex;flex-direction:column;}
+.upd-col + .upd-col{border-left:1px solid #e2ecf7;}
+.upd-col-head{padding:9px 12px;font-size:12.5px;font-weight:600;display:flex;justify-content:space-between;align-items:center;gap:8px;border-bottom:1px solid #eef4fb;background:#f7fbff;min-width:0;}
+.upd-col.local .upd-col-head{color:#1e40af;}
+.upd-col.remote .upd-col-head{color:#9a3412;background:#fffaf3;}
+.upd-list{max-height:260px;overflow-y:auto;min-width:0;}
+.upd-row{display:flex;gap:8px;padding:9px 12px;border-bottom:1px solid #eef4fb;align-items:flex-start;cursor:pointer;min-width:0;}
+.upd-row:last-child{border-bottom:none;}
+.upd-row:hover{background:#f2f8ff;}
+.upd-row.sel{background:#dbeafe;}
+.upd-row input[type=checkbox]{margin-top:3px;flex-shrink:0;width:15px;height:15px;cursor:pointer;}
+.upd-row .upd-r{flex:1;min-width:0;}
+.upd-row .upd-q{font-size:12.5px;color:#1e293b;font-weight:600;line-height:1.5;word-break:break-word;margin-bottom:2px;}
+.upd-row .upd-a{font-size:12px;color:#b91c1c;line-height:1.5;word-break:break-word;}
+.upd-tag{display:inline-block;font-size:10px;font-weight:700;padding:1px 7px;border-radius:8px;margin-left:6px;white-space:nowrap;}
+.tag-add{background:#dcfce7;color:#16a34a;}
+.tag-missing{background:#fee2e2;color:#dc2626;}
+.tag-changed{background:#fef3c7;color:#b45309;}
+.upd-check-btn{flex-shrink:0;font-size:11px;padding:4px 10px;border-radius:6px;border:1px solid #c8d9ec;background:#fff;color:#1e40af;cursor:pointer;font-weight:600;white-space:nowrap;align-self:center;}
+.upd-check-btn:hover{background:#dbeafe;border-color:#93c5fd;}
+.upd-empty{padding:22px 12px;text-align:center;color:#8aa2c0;font-size:12.5px;}
+.upd-newhead{padding:9px 12px;font-size:12.5px;color:#9a3412;background:#fffaf3;border-bottom:1px solid #eef4fb;font-weight:600;}
+
+/* 核对弹窗 */
+.ud-cols{display:flex;gap:12px;flex-wrap:wrap;}
+.ud-item{flex:1 1 260px;min-width:0;border:1px solid #e2ecf7;border-radius:10px;background:#fff;padding:12px 14px;}
+.ud-label{font-size:12.5px;font-weight:700;color:#6a8aad;margin-bottom:8px;}
+.ud-row{display:flex;gap:10px;padding:6px 0;border-bottom:1px dashed #eef4fb;font-size:13px;line-height:1.6;}
+.ud-row:last-child{border-bottom:none;}
+.ud-k{flex:0 0 44px;color:#8aa2c0;font-weight:600;}
+.ud-v{flex:1;min-width:0;word-break:break-word;color:#1e293b;}
+.ud-v.ans{color:#b91c1c;font-weight:600;}
+.ud-opts{margin-top:6px;display:flex;flex-direction:column;gap:4px;}
+.ud-opt{font-size:12.5px;color:#334155;background:#f8fafc;border-radius:6px;padding:6px 9px;word-break:break-word;}
+
+.upd-actions{margin-top:10px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;width:100%;}
+.upd-actions label{display:flex;gap:6px;align-items:center;font-size:12.5px;color:#4a6a8a;cursor:pointer;}
+.upd-tip{font-size:12px;color:#6a8aad;}
+@media (max-width:560px){.upd-cols{flex-direction:column;}.upd-col + .upd-col{border-left:none;border-top:1px solid #e2ecf7;}}
+
 /* 练习列表 */
 .ptab-content{display:none;}
 .ptab-content.active{display:block;}
@@ -481,6 +529,7 @@ body{padding:16px;display:flex;flex-direction:column;align-items:center;}
                 <div class="tab active" data-tab="tab-search">🔍 搜索编辑</div>
                 <div class="tab" data-tab="tab-add">➕ 新增题目</div>
                 <div class="tab" data-tab="tab-practice">📝 练习管理</div>
+                <div class="tab" data-tab="tab-update">🔄 题库更新</div>
             </div>
 
             <!-- 搜索编辑 -->
@@ -666,9 +715,41 @@ body{padding:16px;display:flex;flex-direction:column;align-items:center;}
                     </div>
                 </div>
             </div>
+        <!-- 题库更新 -->
+        <div class="tab-content" id="tab-update">
+            <div class="upd-toolbar">
+                <button class="btn btn-primary" id="updateFetchBtn">🔄 拉取远端题库</button>
+                <button class="btn" id="updateNewOnlyBtn" disabled>🆕 仅看新题（0）</button>
+                <span class="upd-tip" id="updateStatus">尚未拉取远端题库</span>
+            </div>
+            <div class="upd-summary" id="updateSummary"></div>
+            <div class="upd-main" id="updateMain"></div>
+            <div class="upd-actions">
+                <label><input type="checkbox" id="updateSelectAll"> 全选可提取</label>
+                <span class="upd-tip" id="updateSelCount">已选 0 题</span>
+                <button class="btn btn-primary" id="updateExtractBtn" disabled>✅ 提取勾选题到本地</button>
+                <span class="upd-tip">提取后请点击右上角「💾 保存并上传」写入仓库</span>
+            </div>
+        </div>
         </div>
         <div class="modal-footer">
             <button class="btn" id="bankCancel">关闭</button>
+        </div>
+    </div>
+</div>
+
+<!-- 题库核对独立弹窗 -->
+<div class="modal-overlay" id="updateCheckModal" style="z-index:1400;">
+    <div class="modal" style="max-width:660px;">
+        <div class="modal-header">
+            <h3 id="updateCheckTitle">题目核对</h3>
+            <button class="modal-close" id="updateCheckClose">✕</button>
+        </div>
+        <div class="modal-body">
+            <div class="ud-cols" id="updateCheckBody"></div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-primary" id="updateCheckOk">关闭</button>
         </div>
     </div>
 </div>
@@ -926,6 +1007,13 @@ const defaultBank = [{"q":"凡在高地面（）的地点进行的工作都应�
 
 // ==================== 状态变量 ====================
 let questionBank = [];
+let updateRemoteBank = null;
+let updateRemoteCfg = null;
+let updateRemoteEdit = null;
+let updateDiff = null;
+let updateChecked = {};
+let updateDetailKey = null;
+let updateView = 'all';
 let currentUser = null;
 let currentAdmin = null;
 
@@ -1337,6 +1425,320 @@ function loadPracticeEdit() {
     return {};
 }
 function savePracticeEdit(data) { try { localStorage.setItem(PRACTICE_EDIT_KEY, JSON.stringify(data)); } catch (e) { } }
+
+    // ==================== 题库更新：从 new 仓 sync-data.json 拉取、勾选对比与提取 ====================
+    const UPDATE_OWNER = 'shenzhizuo';
+    const UPDATE_REPO  = 'new';
+    const UPDATE_FILE  = 'sync-data.json';
+
+    function normQ(q) { return String(q || '').replace(/\s+/g, ' ').trim(); }
+
+    function normalizeBankItem(x) {
+        return {
+            q: x.q || '', a: x.a || '', e: x.e || '',
+            hidden: x.hidden === true, isChoice: x.isChoice === true,
+            options: x.options || null, correct: x.correct || null,
+            __practiceOnly: x.__practiceOnly === true || x.__practice_only === true
+        };
+    }
+
+    function pickRemoteBank(obj) {
+        const b = obj && obj.bank;
+        if (Array.isArray(b)) return b;
+        if (b && Array.isArray(b.list)) return b.list;
+        return [];
+    }
+
+    async function fetchUpdateSync() {
+        const api = 'https://api.atomgit.com/api/v5/repos/' + UPDATE_OWNER + '/' + UPDATE_REPO + '/contents/' + UPDATE_FILE;
+        const resp = await agFetchTimeout(api, { headers: { 'Authorization': 'Bearer ' + AG_TOKEN, 'Accept': 'application/json' }, cache: 'no-store' });
+        if (!resp.ok) throw new Error('远端请求失败 ' + resp.status);
+        const d = await resp.json();
+        let txt;
+        if (d.content) txt = base64ToUtf8(d.content);
+        else if (d.download_url) { const r = await agFetchTimeout(d.download_url, { cache: 'no-store' }); txt = await r.text(); }
+        else throw new Error('远端文件内容为空');
+        return JSON.parse(txt);
+    }
+
+    function compareUpdate() {
+        const local = questionBank || [];
+        const remote = updateRemoteBank || [];
+        const localMap = {}, remoteMap = {};
+        local.forEach(x => { localMap[normQ(x.q)] = x; });
+        remote.forEach(x => { remoteMap[normQ(x.q)] = x; });
+        const added = [], missing = [], changed = [];
+        let same = 0;
+        remote.forEach(x => {
+            const k = normQ(x.q);
+            const l = localMap[k];
+            if (!l) { added.push(x); return; }
+            const ls = JSON.stringify({ a: l.a, e: l.e, hidden: l.hidden === true, isChoice: l.isChoice === true });
+            const rs = JSON.stringify({ a: x.a, e: x.e, hidden: x.hidden === true, isChoice: x.isChoice === true });
+            if (ls !== rs) changed.push({ local: l, remote: x }); else same++;
+        });
+        local.forEach(x => { if (!remoteMap[normQ(x.q)]) missing.push(x); });
+        return {
+            added, missing, changed, same,
+            localCount: local.length, remoteCount: remote.length,
+            localHidden: local.filter(x => x.hidden).length,
+            remoteHidden: remote.filter(x => x.hidden).length
+        };
+    }
+
+    function extractableItems() {
+        const list = [];
+        (updateDiff.added || []).forEach(x => list.push({ kind: 'add', remote: x, local: null }));
+        (updateDiff.changed || []).forEach(c => list.push({ kind: 'changed', remote: c.remote, local: c.local }));
+        return list;
+    }
+
+    function selectedCount() {
+        return Object.keys(updateChecked).filter(k => updateChecked[k]).length;
+    }
+
+    function refreshUpdateActionBar() {
+        const need = extractableItems().length;
+        const sel = selectedCount();
+        const selAll = document.getElementById('updateSelectAll');
+        const countEl = document.getElementById('updateSelCount');
+        const extractBtn = document.getElementById('updateExtractBtn');
+        const newOnlyBtn = document.getElementById('updateNewOnlyBtn');
+        if (selAll) selAll.checked = need > 0 && sel === need;
+        if (countEl) countEl.textContent = `已选 ${sel} 题 / 可提取 ${need} 题`;
+        if (extractBtn) extractBtn.disabled = sel === 0;
+        if (newOnlyBtn) {
+            newOnlyBtn.disabled = need === 0;
+            newOnlyBtn.textContent = updateView === 'new' ? '📋 查看全部对比' : `🆕 仅看新题（${need}）`;
+        }
+    }
+
+    function detailPanel(label, item, side) {
+        if (!item) {
+            return `<div class="ud-item"><div class="ud-label">${label}</div><div class="upd-empty">${side === 'local' ? '本地无此题' : '远端无此题'}</div></div>`;
+        }
+        const opts = Array.isArray(item.options) && item.options.length
+            ? `<div class="ud-opts">${item.options.map(o => `<div class="ud-opt">${escapeHTML(o)}</div>`).join('')}</div>` : '';
+        const tags = [item.hidden ? '隐藏' : '', item.isChoice ? '选择题' : ''].filter(Boolean).join(' / ');
+        return `<div class="ud-item">
+            <div class="ud-label">${label}</div>
+            <div class="ud-row"><span class="ud-k">题目</span><span class="ud-v">${escapeHTML(item.q || '')}</span></div>
+            <div class="ud-row"><span class="ud-k">答案</span><span class="ud-v ans">${escapeHTML(item.a || '')}</span></div>
+            <div class="ud-row"><span class="ud-k">解析</span><span class="ud-v">${escapeHTML(item.e || '') || '—'}</span></div>
+            <div class="ud-row"><span class="ud-k">标记</span><span class="ud-v">${tags || '—'}</span></div>
+            ${opts}
+        </div>`;
+    }
+
+    function openCheckModal(key, kind) {
+        const l = (questionBank || []).find(x => normQ(x.q) === key);
+        const r = (updateRemoteBank || []).find(x => normQ(x.q) === key);
+        const title = document.getElementById('updateCheckTitle');
+        const body = document.getElementById('updateCheckBody');
+        if (title) title.textContent = kind === 'add' ? '🆕 新增题目核对' : kind === 'missing' ? '📕 本地独有题目核对' : '✏️ 内容差异核对';
+        if (body) body.innerHTML = detailPanel('📘 本地', l, 'local') + detailPanel('🌐 远端', r, 'remote');
+        const modal = document.getElementById('updateCheckModal');
+        if (modal) modal.classList.add('active');
+    }
+
+    function closeCheckModal() {
+        const modal = document.getElementById('updateCheckModal');
+        if (modal) modal.classList.remove('active');
+    }
+
+    function rowHTML(x, opts) {
+        const { kind, tag, tagCls, checked, selectable, withBtn } = opts;
+        const q = escapeHTML(x.q || '');
+        const a = escapeHTML(x.a || '');
+        const tagHtml = tag ? `<span class="upd-tag ${tagCls}">${tag}</span>` : '';
+        const cb = selectable ? `<input type="checkbox" data-key="${encodeURIComponent(normQ(x.q))}" data-kind="${kind}" ${checked ? 'checked' : ''}>` : '';
+        const btn = withBtn ? `<button class="upd-check-btn" data-key="${encodeURIComponent(normQ(x.q))}" data-kind="${kind}">核对</button>` : '';
+        return `<div class="upd-row" data-key="${encodeURIComponent(normQ(x.q))}" data-kind="${kind || ''}">${cb}<div class="upd-r"><div class="upd-q">${q}${tagHtml}</div><div class="upd-a">${a}</div></div>${btn}</div>`;
+    }
+
+    function bindUpdateList(el) {
+        if (!el) return;
+        el.onchange = function (ev) {
+            const cb = ev.target.closest('input[type=checkbox]');
+            if (!cb) return;
+            updateChecked[decodeURIComponent(cb.dataset.key)] = cb.checked;
+            refreshUpdateActionBar();
+        };
+        el.onclick = function (ev) {
+            if (ev.target.closest('input[type=checkbox]')) return;
+            const row = ev.target.closest('.upd-row[data-key]');
+            if (!row) return;
+            openCheckModal(decodeURIComponent(row.dataset.key), row.dataset.kind);
+        };
+    }
+
+    function renderAllView(localListEl, remoteListEl) {
+        const localMap = {}, remoteMap = {};
+        (questionBank || []).forEach(x => localMap[normQ(x.q)] = x);
+        (updateRemoteBank || []).forEach(x => remoteMap[normQ(x.q)] = x);
+        const changedKeys = {}; updateDiff.changed.forEach(c => changedKeys[normQ(c.remote.q)] = true);
+        const missingKeys = {}; updateDiff.missing.forEach(x => missingKeys[normQ(x.q)] = true);
+
+        localListEl.innerHTML = (questionBank || []).map(x => {
+            const k = normQ(x.q);
+            if (missingKeys[k]) return rowHTML(x, { kind: 'missing', tag: '本地独有', tagCls: 'tag-missing', selectable: false });
+            return rowHTML(x, { kind: '', selectable: false });
+        }).join('') || '<div class="upd-empty">本地暂无题库</div>';
+
+        remoteListEl.innerHTML = (updateRemoteBank || []).map(x => {
+            const k = normQ(x.q);
+            if (!localMap[k]) return rowHTML(x, { kind: 'add', tag: '新增', tagCls: 'tag-add', selectable: true, checked: true });
+            if (changedKeys[k]) return rowHTML(x, { kind: 'changed', tag: '有更新', tagCls: 'tag-changed', selectable: true, checked: true });
+            return rowHTML(x, { kind: '', selectable: false });
+        }).join('') || '<div class="upd-empty">远端暂无题库</div>';
+
+        bindUpdateList(localListEl);
+        bindUpdateList(remoteListEl);
+    }
+
+    function renderNewView(listEl) {
+        const items = extractableItems();
+        if (!items.length) { listEl.innerHTML = '<div class="upd-empty">暂无需要提取的新题</div>'; return; }
+        listEl.innerHTML = items.map(it => {
+            const tag = it.kind === 'add' ? '新增' : '有更新';
+            const cls = it.kind === 'add' ? 'tag-add' : 'tag-changed';
+            return rowHTML(it.remote, { kind: it.kind, tag, tagCls: cls, selectable: true, checked: true, withBtn: true });
+        }).join('');
+        bindUpdateList(listEl);
+    }
+
+    function renderUpdateCompare() {
+        const diff = updateDiff;
+        const statusEl = document.getElementById('updateStatus');
+        const summaryEl = document.getElementById('updateSummary');
+        const mainEl = document.getElementById('updateMain');
+        if (!diff) return;
+
+        updateChecked = {};
+        extractableItems().forEach(it => { updateChecked[normQ(it.remote.q)] = true; });
+
+        summaryEl.innerHTML =
+            `<div class="us-item">本地题库<b>${diff.localCount} 题</b></div>` +
+            `<div class="us-item">隐藏题目<b>${diff.localHidden} 题</b></div>` +
+            `<div class="us-item">远端题库<b>${diff.remoteCount} 题</b></div>` +
+            `<div class="us-item">远端隐藏<b>${diff.remoteHidden} 题</b></div>` +
+            `<div class="us-item">远端新增<b style="color:#16a34a;">${diff.added.length}</b></div>` +
+            `<div class="us-item">内容不同<b style="color:#b45309;">${diff.changed.length}</b></div>` +
+            `<div class="us-item">本地独有<b style="color:#dc2626;">${diff.missing.length}</b></div>`;
+
+        if (updateView === 'new') {
+            mainEl.innerHTML = `<div class="upd-newhead">仅显示需要提取的新题（新增 + 有更新），共 ${extractableItems().length} 题</div><div class="upd-list" id="updateNewList"></div>`;
+            renderNewView(document.getElementById('updateNewList'));
+        } else {
+            mainEl.innerHTML =
+                `<div class="upd-cols">
+                    <div class="upd-col local">
+                        <div class="upd-col-head"><span>📘 本地题库</span><span>${diff.localCount} 题</span></div>
+                        <div class="upd-list" id="updateLocalList"></div>
+                    </div>
+                    <div class="upd-col remote">
+                        <div class="upd-col-head"><span>🌐 远端题库（new/sync-data.json）</span><span>${diff.remoteCount} 题</span></div>
+                        <div class="upd-list" id="updateRemoteList"></div>
+                    </div>
+                </div>`;
+            renderAllView(document.getElementById('updateLocalList'), document.getElementById('updateRemoteList'));
+        }
+
+        refreshUpdateActionBar();
+
+        const need = diff.added.length + diff.changed.length;
+        if (!need && !diff.missing.length) {
+            statusEl.textContent = '✅ 双方题库一致，无新题库，不需要更新';
+            statusEl.style.color = '#16a34a';
+        } else if (need > 0) {
+            statusEl.textContent = `发现 ${need} 道可提取题目，勾选需要的题目后提取，点「核对」查看详情`;
+            statusEl.style.color = '#b45309';
+        } else {
+            statusEl.textContent = '仅存在本地独有题目，无需从远端提取';
+            statusEl.style.color = '#6a8aad';
+        }
+    }
+
+    async function onClickFetchUpdate() {
+        const btn = document.getElementById('updateFetchBtn');
+        const statusEl = document.getElementById('updateStatus');
+        if (btn) { btn.disabled = true; btn.textContent = '⏳ 正在拉取…'; }
+        try {
+            const data = await fetchUpdateSync();
+            updateRemoteBank = pickRemoteBank(data);
+            updateRemoteCfg = (data && data.practiceCfg) || {};
+            updateRemoteEdit = (data && data.practiceEdit) || {};
+            if (!Array.isArray(updateRemoteBank) || !updateRemoteBank.length) throw new Error('未能从远端解析到题库');
+            updateDiff = compareUpdate();
+            updateView = 'all';
+            renderUpdateCompare();
+        } catch (e) {
+            updateDiff = null;
+            updateChecked = {};
+            if (statusEl) { statusEl.textContent = '拉取失败：' + (e.message || e); statusEl.style.color = '#dc2626'; }
+            showToast('拉取失败：' + (e.message || e));
+        } finally {
+            if (btn) { btn.disabled = false; btn.textContent = '🔄 拉取远端题库'; }
+        }
+    }
+
+    async function extractUpdate() {
+        const chosen = extractableItems().filter(it => updateChecked[normQ(it.remote.q)]);
+        if (!chosen.length) { showToast('请先勾选需要提取的题目'); return; }
+        const ok = await showCustomConfirm(`确定提取勾选的 ${chosen.length} 道题到本地吗？（已有题目将按远端内容更新）`);
+        if (!ok) return;
+
+        const localMap = {};
+        questionBank.forEach(x => localMap[normQ(x.q)] = x);
+
+        chosen.forEach(it => {
+            const x = it.remote;
+            if (it.kind === 'add') {
+                questionBank.push(normalizeBankItem(x));
+            } else {
+                const l = localMap[normQ(x.q)];
+                if (l) {
+                    l.a = x.a || ''; l.e = x.e || '';
+                    l.hidden = x.hidden === true; l.isChoice = x.isChoice === true;
+                    l.options = x.options || null; l.correct = x.correct || null;
+                }
+            }
+        });
+
+        const editData = loadPracticeEdit() || {};
+        if (updateRemoteEdit && typeof updateRemoteEdit === 'object') {
+            const editMetaKeys = { '__practice_only__': 1, updatedAt: 1, device: 1 };
+            Object.keys(updateRemoteEdit).forEach(k => {
+                if (editMetaKeys[k]) return;
+                editData[k] = updateRemoteEdit[k];
+            });
+            const po = updateRemoteEdit.__practice_only__ || [];
+            const bankMap = {}; questionBank.forEach(x => bankMap[normQ(x.q)] = x);
+            po.forEach(x => {
+                if (x && x.q && !bankMap[normQ(x.q)]) {
+                    questionBank.push({ q: x.q, a: x.a || '', e: x.e || '', hidden: x.hidden === true, isChoice: x.isChoice === true, __practiceOnly: true, options: x.options || null, correct: x.correct || null });
+                }
+            });
+        }
+
+        if (updateRemoteCfg && typeof updateRemoteCfg === 'object') {
+            const cfg = loadPracticeCfg() || {};
+            ['singleOptions', 'multiOptions', 'singleCorrect', 'multiCorrect'].forEach(k => { if (updateRemoteCfg[k]) cfg[k] = updateRemoteCfg[k]; });
+            if (updateRemoteCfg.threshold) cfg.threshold = updateRemoteCfg.threshold;
+            savePracticeCfg(cfg);
+            window._AT_CACHE[PRACTICE_CFG_KEY] = cfg;
+        }
+
+        savePracticeEdit(editData);
+        persistBank();
+        window._AT_CACHE[STORAGE_KEY] = questionBank;
+        window._AT_CACHE[PRACTICE_EDIT_KEY] = editData;
+        hasUnsavedChanges = true;
+
+        renderBankList('');
+        renderPracticeList('fill', ''); renderPracticeList('single', ''); renderPracticeList('multi', '');
+        showToast('✅ 已提取 ' + chosen.length + ' 道题，请点击「💾 保存并上传」');
+    }
 
 // ==================== 渲染：学习列表 ====================
 function renderStudyList(keyword) {
@@ -3367,6 +3769,20 @@ setTimeout(() => {
     // 注：practiceNextBtn 的点击事件已在 renderPracticeQuestion 内使用 onclick 接管，此处移除以免重复触发
     // on('practiceNextBtn', 'click', ...) 已删除
     on('practiceFinishBtn', 'click', finishPractice);
+    on('updateFetchBtn', 'click', onClickFetchUpdate);
+    on('updateExtractBtn', 'click', extractUpdate);
+    on('updateCheckClose', 'click', closeCheckModal);
+    on('updateCheckOk', 'click', closeCheckModal);
+    on('updateNewOnlyBtn', 'click', function () {
+        updateView = updateView === 'new' ? 'all' : 'new';
+        renderUpdateCompare();
+    });
+    on('updateSelectAll', 'change', function () {
+        const all = this.checked;
+        extractableItems().forEach(it => { updateChecked[normQ(it.remote.q)] = all; });
+        document.querySelectorAll('.upd-list input[type=checkbox]').forEach(cb => { cb.checked = all; });
+        refreshUpdateActionBar();
+    });
 
     console.log('✅ 全量绑定完成');
 });
