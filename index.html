@@ -124,6 +124,9 @@ body{padding:16px;display:flex;flex-direction:column;align-items:center;}
 .upd-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(104px,1fr));gap:8px;margin-bottom:10px;}
 .upd-summary .us-item{border:1px solid #e2ecf7;border-radius:10px;padding:7px 10px;background:#fafdff;font-size:12px;color:#4a6a8a;min-width:0;}
 .upd-summary .us-item b{display:block;font-size:14px;color:#1e40af;margin-top:2px;}
+.upd-summary .us-item.us-clickable{cursor:pointer;transition:background .15s,border-color .15s;}
+.upd-summary .us-item.us-clickable:hover{border-color:#93c5fd;background:#eff6ff;}
+.upd-summary .us-item.us-clickable .us-hint{font-size:10px;color:#93a8c4;margin-top:3px;}
 .upd-main{border:1px solid #e2ecf7;border-radius:12px;overflow:hidden;width:100%;}
 .upd-cols{display:flex;gap:0;}
 .upd-col{flex:1 1 0;min-width:0;display:flex;flex-direction:column;}
@@ -753,6 +756,22 @@ body{padding:16px;display:flex;flex-direction:column;align-items:center;}
         </div>
     </div>
 </div>
+
+<!-- 分类明细弹窗（内容不同 / 本地独有） -->
+<div class="modal-overlay" id="updateDetailModal" style="z-index:1410;">
+    <div class="modal" style="max-width:660px;">
+        <div class="modal-header">
+            <h3 id="updateDetailTitle">题目明细</h3>
+            <button class="modal-close" id="updateDetailClose">✕</button>
+        </div>
+        <div class="modal-body">
+            <div class="upd-list" id="updateDetailList" style="max-height:420px;"></div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-primary" id="updateDetailOk">关闭</button>
+        </div>
+    </div>
+</div>
     <script>
 // ==================== 独立存储命名空间 ====================
 const NS = 'zktest_independent_v1_';
@@ -1024,6 +1043,7 @@ let hasUnsavedChanges = false;
 let selectedIdx = -1;
 let practiceSelectedIdx = -1;
 let practiceSelectedType = 'fill';
+let practiceAddingType = null;
 
 let practiceQuestions = [];
 let practiceAnswers = [];
@@ -1546,6 +1566,35 @@ function savePracticeEdit(data) { try { localStorage.setItem(PRACTICE_EDIT_KEY, 
         if (modal) modal.classList.remove('active');
     }
 
+    function closeDetailModal() {
+        const modal = document.getElementById('updateDetailModal');
+        if (modal) modal.classList.remove('active');
+    }
+
+    function openDetailModal(kind) {
+        const diff = updateDiff;
+        if (!diff) return;
+        const listEl = document.getElementById('updateDetailList');
+        const titleEl = document.getElementById('updateDetailTitle');
+        const modal = document.getElementById('updateDetailModal');
+        if (!listEl) return;
+        let rows = [];
+        if (kind === 'changed') {
+            (diff.changed || []).forEach(c => rows.push({ kind: 'changed', x: c.remote, tag: '有更新', tagCls: 'tag-changed' }));
+            if (titleEl) titleEl.textContent = '✏️ 内容不同明细（' + rows.length + '）';
+        } else {
+            (diff.missing || []).forEach(x => rows.push({ kind: 'missing', x: x, tag: '本地独有', tagCls: 'tag-missing' }));
+            if (titleEl) titleEl.textContent = '📕 本地独有明细（' + rows.length + '）';
+        }
+        if (!rows.length) {
+            listEl.innerHTML = '<div class="upd-empty">暂无此类题目</div>';
+        } else {
+            listEl.innerHTML = rows.map(r => rowHTML(r.x, { kind: r.kind, tag: r.tag, tagCls: r.tagCls, selectable: false, withBtn: true })).join('');
+            bindUpdateList(listEl);
+        }
+        if (modal) modal.classList.add('active');
+    }
+
     function rowHTML(x, opts) {
         const { kind, tag, tagCls, checked, selectable, withBtn } = opts;
         const q = escapeHTML(x.q || '');
@@ -1623,8 +1672,8 @@ function savePracticeEdit(data) { try { localStorage.setItem(PRACTICE_EDIT_KEY, 
             `<div class="us-item">远端题库<b>${diff.remoteCount} 题</b></div>` +
             `<div class="us-item">远端隐藏<b>${diff.remoteHidden} 题</b></div>` +
             `<div class="us-item">远端新增<b style="color:#16a34a;">${diff.added.length}</b></div>` +
-            `<div class="us-item">内容不同<b style="color:#b45309;">${diff.changed.length}</b></div>` +
-            `<div class="us-item">本地独有<b style="color:#dc2626;">${diff.missing.length}</b></div>`;
+            `<div class="us-item us-clickable" data-detail-kind="changed">内容不同<b style="color:#b45309;">${diff.changed.length}</b><div class="us-hint">点击查看明细</div></div>` +
+            `<div class="us-item us-clickable" data-detail-kind="missing">本地独有<b style="color:#dc2626;">${diff.missing.length}</b><div class="us-hint">点击查看明细</div></div>`;
 
         if (updateView === 'new') {
             mainEl.innerHTML = `<div class="upd-newhead">仅显示需要提取的新题（新增 + 有更新），共 ${extractableItems().length} 题</div><div class="upd-list" id="updateNewList"></div>`;
@@ -1642,6 +1691,14 @@ function savePracticeEdit(data) { try { localStorage.setItem(PRACTICE_EDIT_KEY, 
                     </div>
                 </div>`;
             renderAllView(document.getElementById('updateLocalList'), document.getElementById('updateRemoteList'));
+        }
+
+        if (summaryEl) {
+            summaryEl.onclick = function (ev) {
+                const card = ev.target.closest('.us-clickable[data-detail-kind]');
+                if (!card) return;
+                openDetailModal(card.dataset.detailKind);
+            };
         }
 
         refreshUpdateActionBar();
@@ -2025,6 +2082,62 @@ function getOptionsFromEditor(containerId) {
         if (input && input.value.trim()) opts.push(letter + '. ' + input.value.trim());
     });
     return opts;
+}
+
+// 把练习专属题同步进 practiceEdit.__practice_only__ 镜像数组，随 practiceEdit 一并上云
+function syncPracticeOnlyList(editData, item) {
+    if (!Array.isArray(editData.__practice_only__)) editData.__practice_only__ = [];
+    const k = normQ(item.q);
+    const idx = editData.__practice_only__.findIndex(x => normQ(x.q) === k);
+    const rec = {
+        q: item.q, a: item.a || '', e: item.e || '',
+        hidden: item.hidden === true, isChoice: item.isChoice === true,
+        options: item.options || null, correct: item.correct || null
+    };
+    if (idx >= 0) editData.__practice_only__[idx] = rec; else editData.__practice_only__.push(rec);
+}
+
+// 新增一道练习题（填空 / 单选 / 多选），写入题库与练习编辑缓存，待「保存并上传」写入 AT
+function commitPracticeAdd(type) {
+    let q, a, e, opts = null, correct = null, isChoice = false;
+    if (type === 'fill') {
+        const qRaw = (document.getElementById('peQ') || {}).value.trim();
+        e = (document.getElementById('peE') || {}).value.trim();
+        if (!qRaw) { showToast('题目不能为空'); return false; }
+        const parsed = parseQuestionWithAnswers(qRaw, 'all');
+        a = parsed.answers.join('｜');
+        if (!a) { showToast('请在题目中填写答案'); return false; }
+        q = parsed.displayText;
+    } else {
+        const qEl = document.getElementById(type === 'single' ? 'pseQ' : 'pmeQ');
+        const cEl = document.getElementById(type === 'single' ? 'pseCorrect' : 'pmeCorrect');
+        const eEl = document.getElementById(type === 'single' ? 'pseE' : 'pmeE');
+        const oBox = type === 'single' ? 'pseOptions' : 'pmeOptions';
+        q = (qEl || {}).value.trim();
+        correct = (cEl || {}).value.trim().toUpperCase();
+        opts = getOptionsFromEditor(oBox);
+        e = (eEl || {}).value.trim();
+        if (!q || !correct || !opts.length) { showToast('题目 / 选项 / 答案不能为空'); return false; }
+        isChoice = true; a = correct;
+    }
+    if (questionBank.some(x => normQ(x.q) === normQ(q))) { showToast('该题目已存在'); return false; }
+    const newItem = { q: q, a: a, e: e, hidden: false, isChoice: isChoice, __practiceOnly: true, options: opts, correct: correct };
+    questionBank.push(newItem);
+    const editData = loadPracticeEdit();
+    const rawCustom = type === 'fill' ? (document.getElementById('peQ') || {}).value.trim() : q;
+    editData[q] = {
+        customQuestion: rawCustom, customAnswer: a, isChoice: isChoice,
+        options: opts, correct: correct, orderSetting: 'all', updatedAt: nowTs()
+    };
+    syncPracticeOnlyList(editData, newItem);
+    savePracticeEdit(editData);
+    window._AT_CACHE[PRACTICE_EDIT_KEY] = editData;
+    persistBank();
+    window._AT_CACHE[STORAGE_KEY] = questionBank;
+    hasUnsavedChanges = true;
+    showToast('✅ 已新增，点「保存并上传」写入仓库');
+    renderPracticeList(type, '');
+    return true;
 }
 // ==================== 练习核心逻辑 ====================
 function loadPracticeState() { try { const raw = localStorage.getItem(PRACTICE_STATE_KEY); if (!raw) return null; const state = JSON.parse(raw); if (state.practiceFinished) return null; return state; } catch (e) { return null; } }
@@ -3427,6 +3540,10 @@ if (isSkipATInit) {
             if (Array.isArray(window._AT_CACHE[ADMIN_PASSWORDS_KEY]) && window._AT_CACHE[ADMIN_PASSWORDS_KEY].length) {
                 localStorage.setItem(ADMIN_PASSWORDS_KEY, JSON.stringify(window._AT_CACHE[ADMIN_PASSWORDS_KEY]));
             }
+            // 练习三类（填空 / 单选 / 多选）配置落本地缓存，保证跨端还原一致
+            if (window._AT_CACHE[PRACTICE_CFG_KEY]) localStorage.setItem(PRACTICE_CFG_KEY, JSON.stringify(window._AT_CACHE[PRACTICE_CFG_KEY]));
+            if (window._AT_CACHE[PRACTICE_EDIT_KEY]) localStorage.setItem(PRACTICE_EDIT_KEY, JSON.stringify(window._AT_CACHE[PRACTICE_EDIT_KEY]));
+            renderPracticeList('fill', ''); renderPracticeList('single', ''); renderPracticeList('multi', '');
         } catch (e) { }
     }
 }).catch(e => console.warn('后台同步云端失败', e));
@@ -3513,12 +3630,33 @@ if (isSkipATInit) {
     });
 
     // ---------- 练习表单取消 ----------
-    on('peCancel', 'click', function () { practiceSelectedIdx = -1; const f = document.getElementById('practiceFillEditForm'); if (f) f.style.display = 'none'; renderPracticeList('fill', ''); });
-    on('pseCancel', 'click', function () { practiceSelectedIdx = -1; const f = document.getElementById('practiceSingleEditForm'); if (f) f.style.display = 'none'; renderPracticeList('single', ''); });
-    on('pmeCancel', 'click', function () { practiceSelectedIdx = -1; const f = document.getElementById('practiceMultiEditForm'); if (f) f.style.display = 'none'; renderPracticeList('multi', ''); });
+    on('peCancel', 'click', function () { practiceSelectedIdx = -1; practiceAddingType = null; const f = document.getElementById('practiceFillEditForm'); if (f) f.style.display = 'none'; renderPracticeList('fill', ''); });
+    on('pseCancel', 'click', function () { practiceSelectedIdx = -1; practiceAddingType = null; const f = document.getElementById('practiceSingleEditForm'); if (f) f.style.display = 'none'; renderPracticeList('single', ''); });
+    on('pmeCancel', 'click', function () { practiceSelectedIdx = -1; practiceAddingType = null; const f = document.getElementById('practiceMultiEditForm'); if (f) f.style.display = 'none'; renderPracticeList('multi', ''); });
+    on('practiceAddFillBtn', 'click', function () {
+        practiceAddingType = 'fill'; practiceSelectedIdx = -1;
+        document.getElementById('peQ').value = ''; document.getElementById('peE').value = '';
+        document.getElementById('practiceFillEditForm').style.display = 'block';
+        renderPracticeList('fill', '');
+    });
+    on('practiceAddSingleBtn', 'click', function () {
+        practiceAddingType = 'single'; practiceSelectedIdx = -1;
+        document.getElementById('pseQ').value = ''; document.getElementById('pseE').value = ''; document.getElementById('pseCorrect').value = 'A';
+        renderOptionsEditor('pseOptions', ['A. 选项A', 'B. 选项B', 'C. 选项C', 'D. 选项D']);
+        document.getElementById('practiceSingleEditForm').style.display = 'block';
+        renderPracticeList('single', '');
+    });
+    on('practiceAddMultiBtn', 'click', function () {
+        practiceAddingType = 'multi'; practiceSelectedIdx = -1;
+        document.getElementById('pmeQ').value = ''; document.getElementById('pmeE').value = ''; document.getElementById('pmeCorrect').value = 'ABC';
+        renderOptionsEditor('pmeOptions', ['A. 选项A', 'B. 选项B', 'C. 选项C', 'D. 选项D']);
+        document.getElementById('practiceMultiEditForm').style.display = 'block';
+        renderPracticeList('multi', '');
+    });
 
     // ---------- 练习表单保存 ----------
     on('peSave', 'click', function () {
+        if (practiceAddingType === 'fill') { if (commitPracticeAdd('fill')) practiceAddingType = null; return; }
         if (practiceSelectedIdx < 0) return;
         const q = (document.getElementById('peQ') || {}).value.trim(); const e = (document.getElementById('peE') || {}).value.trim();
         const parsed = parseQuestionWithAnswers(q, 'all');
@@ -3528,6 +3666,7 @@ if (isSkipATInit) {
         savePracticeEdit(editData); hasUnsavedChanges = true; showToast('已保存'); renderPracticeList('fill', '');
     });
     on('pseSave', 'click', function () {
+        if (practiceAddingType === 'single') { if (commitPracticeAdd('single')) practiceAddingType = null; return; }
         if (practiceSelectedIdx < 0) return;
         const q = (document.getElementById('pseQ') || {}).value.trim();
         const correct = (document.getElementById('pseCorrect') || {}).value.trim().toUpperCase();
@@ -3537,6 +3676,7 @@ if (isSkipATInit) {
         savePracticeEdit(editData); hasUnsavedChanges = true; showToast('已保存'); renderPracticeList('single', '');
     });
     on('pmeSave', 'click', function () {
+        if (practiceAddingType === 'multi') { if (commitPracticeAdd('multi')) practiceAddingType = null; return; }
         if (practiceSelectedIdx < 0) return;
         const q = (document.getElementById('pmeQ') || {}).value.trim();
         const correct = (document.getElementById('pmeCorrect') || {}).value.trim().toUpperCase();
@@ -3773,6 +3913,8 @@ setTimeout(() => {
     on('updateExtractBtn', 'click', extractUpdate);
     on('updateCheckClose', 'click', closeCheckModal);
     on('updateCheckOk', 'click', closeCheckModal);
+    on('updateDetailClose', 'click', closeDetailModal);
+    on('updateDetailOk', 'click', closeDetailModal);
     on('updateNewOnlyBtn', 'click', function () {
         updateView = updateView === 'new' ? 'all' : 'new';
         renderUpdateCompare();
